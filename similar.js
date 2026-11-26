@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.4';
+  const VERSION = '0.9.5';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -525,12 +525,205 @@
     return Boolean(dialog.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'));
   }
 
-  function pickCard(dialog, title) {
-    const nodes = Array.from(dialog.querySelectorAll('div, label, li'))
-      .filter(element => visible(element) && norm(element.textContent).startsWith(title))
-      .filter(element => norm(element.textContent).length < 200);
-    const deepest = nodes.filter(element => !nodes.some(other => other !== element && element.contains(other)));
-    return deepest[0] || null;
+  /**
+   * 弹窗里的一个选项卡片（「发布相似品」「设置渠道品」这种）。
+   * 返回 head（几乎只有标题的那一层，用来精确点标题）与 shell（连描述一起包住的那层，用来读选中样式）。
+   */
+  function findOptionCard(dialog, title) {
+    const nodes = Array.from(dialog.querySelectorAll('div, span, label, li, p, section'))
+      .filter(visible)
+      .map(element => ({ element, text: compact(element.textContent) }))
+      .filter(item => item.text.startsWith(title) && item.text.length <= title.length + 240);
+    if (!nodes.length) return null;
+
+    // 标题层：几乎只有标题文字的那一层（多层嵌套时取最内层）
+    const headList = nodes
+      .filter(item => item.text.length <= title.length + 8)
+      .map(item => item.element);
+    const head = headList
+      .filter(element => !headList.some(other => other !== element && element.contains(other)))
+      .pop() || null;
+
+    // 卡片壳：从标题往上第一个把描述也包进来的祖先。
+    // 不能取「最内层含描述的节点」——那是描述文字自己，读不到卡片的边框/选中样式。
+    let shell = null;
+    if (head) {
+      let node = head.parentElement;
+      for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+        const text = compact(node.textContent);
+        if (text.length > title.length + 8 && text.length <= title.length + 240) {
+          shell = node;
+          break;
+        }
+      }
+    }
+    if (!shell) {
+      const shells = nodes
+        .filter(item => item.text.length > title.length + 8)
+        .map(item => item.element);
+      shell = shells
+        .filter(element => !shells.some(other => other !== element && element.contains(other)))[0] || null;
+    }
+    if (!shell) return null;
+    return { title, head: head || shell, shell };
+  }
+
+  /**
+   * 这张卡片当前是不是选中状态。
+   * 依次看：原生单/复选框 → aria-checked → 蓝色描边/阴影（平台强调色）→ 右上角勾选角标。
+   * 平台如果换成别的选中样式，这里会判不出来 —— 宁可在选择阶段报错停下，也不能带着
+   * 「设置渠道品」去点确定（那会创建成渠道品，比失败更麻烦）。
+   */
+  function cardChecked(card) {
+    if (!card || !card.shell) return false;
+    const shell = card.shell;
+
+    // 有原生单/复选框就以它为准，但「没勾上」不能直接判负：
+    // 有些实现把 radio 藏着、选中态只体现在外层样式上
+    const boxes = Array.from(shell.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+    if (boxes.some(box => box.checked)) return true;
+
+    if (shell.getAttribute('aria-checked') === 'true') return true;
+    if (shell.getAttribute('aria-selected') === 'true') return true;
+    if (shell.querySelector('[aria-checked="true"], [aria-selected="true"]')) return true;
+
+    // 选中卡片是蓝色描边（#155bd4 这类），未选中是浅灰；只看边框/阴影/轮廓，不看背景，
+    // 免得把浅蓝 hover 背景误判成选中
+    const blue = value => {
+      const nums = String(value || '').match(/\d+(?:\.\d+)?/g);
+      if (!nums || nums.length < 3) return false;
+      const [r, g, b] = nums.map(Number);
+      return b >= 150 && b - r >= 40 && b - g >= 20;
+    };
+    try {
+      const style = getComputedStyle(shell);
+      const borderWidth = parseFloat(style.borderTopWidth) || 0;
+      if (borderWidth > 0 && blue(style.borderTopColor)) return true;
+      if (blue(style.boxShadow)) return true;
+      if (style.outlineStyle !== 'none' && blue(style.outlineColor)) return true;
+      // 选中卡片的底色通常是极浅的蓝（白底 255,255,255 与灰底都不会满足这个差值）。
+      // 没动过鼠标，所以不会读到 hover 态
+      const bg = String(style.backgroundColor || '').match(/\d+(?:\.\d+)?/g);
+      if (bg && bg.length >= 3) {
+        const [r, g, b] = bg.map(Number);
+        if (b >= 200 && b - r >= 8 && b - g >= 4) return true;
+      }
+    } catch {
+      /* 读样式失败就往下走角标判断 */
+    }
+
+    // 右上角的勾选角标（svg / i / span），限制在卡片右上 26px 内，尺寸 8~26
+    try {
+      const box = shell.getBoundingClientRect();
+      return Array.from(shell.querySelectorAll('svg, i, span, img')).some(node => {
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 8 || rect.width > 26 || rect.height < 8 || rect.height > 26) return false;
+        return rect.right > box.right - 26 && rect.top < box.top + 26;
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /** 等元素位置连续两次采样一致（弹窗入场动画结束），避免点到下面那张卡片 */
+  async function waitStable(element, timeout = 1500) {
+    if (!element) return false;
+    let last = '';
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const rect = element.getBoundingClientRect();
+      const key = [rect.top, rect.left, rect.width, rect.height].map(value => Math.round(value)).join(':');
+      if (key === last) return true;
+      last = key;
+      await sleep(120);
+    }
+    return false;
+  }
+
+  /**
+   * 在「发布相似品 / 设置渠道品」这种二选一弹窗里选中「发布相似品」。
+   * 平台默认可能停在「设置渠道品」上（它在推渠道品），所以必须**点完校验**：
+   * 选不中就让调用方取消弹窗，绝不带着渠道品继续。
+   */
+  async function chooseSimilarOption(dialog) {
+    const similar = findOptionCard(dialog, '发布相似品');
+    const channel = findOptionCard(dialog, '设置渠道品');
+    if (!similar) return { ok: true, needed: false };
+
+    // 只有一张卡片：说明这个弹窗没有二选一，不用动
+    if (!channel) {
+      logStep('确认弹窗只有「发布相似品」一个选项，无需切换');
+      return { ok: true, needed: false };
+    }
+
+    if (cardChecked(similar) && !cardChecked(channel)) {
+      logStep('「发布相似品」已是选中状态，无需切换');
+      return { ok: true, needed: true };
+    }
+
+    // 点外壳（整张卡片可点），不要点内部文字节点；先等动画结束再算坐标
+    const signature = card => {
+      try {
+        const style = getComputedStyle(card.shell);
+        return [
+          String(card.shell.className || ''),
+          style.borderTopColor,
+          style.borderTopWidth,
+          style.boxShadow,
+          style.backgroundColor
+        ].join('|');
+      } catch {
+        return '';
+      }
+    };
+    const beforeSimilar = signature(similar);
+    const beforeChannel = signature(channel);
+
+    const attempts = [similar.shell, similar.head, similar.shell];
+    for (let index = 0; index < attempts.length; index++) {
+      const target = attempts[index];
+      if (!target) continue;
+      await waitStable(similar.shell, 1200);
+      try {
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+      } catch {
+        /* 弹窗内一般不需要滚动 */
+      }
+      mouseClick(target);
+      await sleep(420);
+      // 判据一：语义上「发布相似品」选中、「设置渠道品」未选中
+      if (cardChecked(similar) && !cardChecked(channel)) {
+        logStep(`已选中「发布相似品」（第 ${index + 1} 次点击生效）`);
+        return { ok: true, needed: true };
+      }
+      // 判据二：两张卡片的样式签名互换了 —— 选中态确实从另一张移到了这一张。
+      // 平台若用了我们认不出的选中样式，靠这条兜住
+      const swapped = beforeSimilar && beforeSimilar !== beforeChannel
+        && signature(similar) === beforeChannel && signature(channel) === beforeSimilar;
+      if (swapped) {
+        logStep(`已选中「发布相似品」（第 ${index + 1} 次点击后两张卡片状态互换）`);
+        return { ok: true, needed: true };
+      }
+    }
+
+    const describe = card => {
+      if (!card) return '未找到';
+      let cls = '';
+      let border = '';
+      try {
+        const style = getComputedStyle(card.shell);
+        cls = String(card.shell.className || '').slice(0, 60);
+        border = `${style.borderTopWidth} ${style.borderTopColor}`;
+      } catch {
+        /* 忽略 */
+      }
+      return `${cardChecked(card) ? '已选' : '未选'}（class=${cls || '无'}，边框=${border || '未知'}）`;
+    };
+    return {
+      ok: false,
+      needed: true,
+      reason: `没能把确认弹窗切到「发布相似品」：发布相似品${describe(similar)}；设置渠道品${describe(channel)}`
+    };
   }
 
   /* ---------------- 列表页：搜索并打开发布相似品 ---------------- */
@@ -886,13 +1079,13 @@
         .map(node => `「${norm(node.textContent)}」`).join('') || '无'
     }`);
 
-    // 只有带单选项的弹窗才需要先选第一项；纯文字确认弹窗直接点确认
-    if (dialogHasOptions(dialog)) {
-      const card = pickCard(dialog, '发布相似品');
-      if (card) {
-        mouseClick(card);
-        await sleep(450);
-      }
+    // 二选一弹窗（发布相似品 / 设置渠道品）：平台默认可能停在「设置渠道品」上，
+    // 点不准就会创建成渠道品，所以点完必须校验；选不中直接取消，绝不带着渠道品继续
+    const picked = await chooseSimilarOption(dialog);
+    if (!picked.ok) {
+      clickDialogCancel(dialog);
+      logStep(picked.reason);
+      throw new Error(`${picked.reason}，已取消本条（避免创建成渠道品）`);
     }
     // 关键顺序：先登记“即将打开发布页”，让后台在**点确认之前**拍下标签页快照。
     // 若放在点击之后，新标签页已在快照里，会被当成“本来就存在的创建页”而拒绝接管。
@@ -1658,6 +1851,19 @@
         .map(node => `「${norm(node.textContent)}」${String(node.className || '').slice(0, 30)}`);
       lines.push(`确认弹窗：${norm(dialog.textContent).slice(0, 60)}`);
       lines.push(`  单选项：${dialogHasOptions(dialog) ? '有' : '无'}`);
+      // 二选一弹窗的选中状态最容易出错（会创建成渠道品），自检里直接写清楚
+      for (const title of ['发布相似品', '设置渠道品']) {
+        const card = findOptionCard(dialog, title);
+        if (!card) continue;
+        let look = '';
+        try {
+          const style = getComputedStyle(card.shell);
+          look = `边框=${style.borderTopWidth} ${style.borderTopColor}，底色=${style.backgroundColor}`;
+        } catch {
+          look = '样式读取失败';
+        }
+        lines.push(`  选项「${title}」：${cardChecked(card) ? '已选中' : '未选中'}（${look}；class=${String(card.shell.className || '').slice(0, 40) || '无'}）`);
+      }
       lines.push(`  按钮：${buttons.join(' ') || '无'}`);
     } else {
       lines.push('确认弹窗：当前没有');
