@@ -1,0 +1,429 @@
+/*
+ * 共享设计系统：颜色、间距、圆角、基础组件
+ * 颜色取自 2.0 方案第 8 节；深色主题通过 [data-theme="dark"] 覆盖同一批变量，
+ * 因此组件样式只写一次，换主题不需要改任何组件代码。
+ */
+
+:root {
+  --c-primary: #2563eb;
+  --c-primary-hover: #1d4ed8;
+  --c-primary-soft: #eff4ff;
+  --c-bg: #f7f8fa;
+  --c-card: #ffffff;
+  --c-text: #1f2937;
+  --c-muted: #6b7280;
+  --c-success: #16a34a;
+  --c-success-soft: #ecfdf3;
+  --c-warn: #d97706;
+  --c-warn-soft: #fffaeb;
+  --c-error: #dc2626;
+  --c-error-soft: #fef3f2;
+  --c-border: #e5e7eb;
+  --c-border-strong: #d1d5db;
+  --c-hover: #f3f4f6;
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-full: 999px;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-2: 0 2px 6px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+
+  --dur: 180ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+}
+
+[data-theme="dark"] {
+  --c-primary: #3b82f6;
+  --c-primary-hover: #60a5fa;
+  --c-primary-soft: #17233d;
+  --c-bg: #0f1115;
+  --c-card: #171a21;
+  --c-text: #e5e7eb;
+  --c-muted: #9ca3af;
+  --c-success: #22c55e;
+  --c-success-soft: #12251a;
+  --c-warn: #f59e0b;
+  --c-warn-soft: #2a1f0f;
+  --c-error: #f87171;
+  --c-error-soft: #2a1416;
+  --c-border: #262a33;
+  --c-border-strong: #333844;
+  --c-hover: #1d2129;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--c-bg);
+  color: var(--c-text);
+  font: 13px/1.5 "Microsoft YaHei", -apple-system, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--c-primary);
+  text-decoration: none;
+}
+
+/* ---------- 图标 ---------- */
+
+.i {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.i svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.i-lg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ---------- 按钮 ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-card);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.btn:hover {
+  background: var(--c-hover);
+  border-color: var(--c-border-strong);
+}
+
+.btn:active {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  background: var(--c-card);
+  border-color: var(--c-border);
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--c-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--c-primary-hover);
+  border-color: transparent;
+}
+
+.btn-primary:disabled:hover {
+  background: var(--c-primary);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--c-muted);
+}
+
+.btn-ghost:hover {
+  background: var(--c-hover);
+  border-color: transparent;
+  color: var(--c-text);
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-sm {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.btn-icon {
+  padding: 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--c-muted);
+}
+
+.btn-icon:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+  border-color: transparent;
+}
+
+/* ---------- 表单 ---------- */
+
+.input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-card);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.input::placeholder {
+  color: var(--c-muted);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 3px var(--c-primary-soft);
+}
+
+select.input {
+  appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--c-muted) 50%),
+    linear-gradient(135deg, var(--c-muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+textarea.input {
+  font: 12px/1.6 "Consolas", monospace;
+  resize: vertical;
+}
+
+/* ---------- 卡片与标签 ---------- */
+
+.card {
+  padding: var(--sp-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-card);
+  box-shadow: var(--shadow-1);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  background: var(--c-hover);
+  color: var(--c-muted);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.badge-primary {
+  background: var(--c-primary-soft);
+  color: var(--c-primary);
+}
+
+.badge-success {
+  background: var(--c-success-soft);
+  color: var(--c-success);
+}
+
+.badge-warn {
+  background: var(--c-warn-soft);
+  color: var(--c-warn);
+}
+
+.badge-error {
+  background: var(--c-error-soft);
+  color: var(--c-error);
+}
+
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-full);
+  background: var(--c-card);
+  color: var(--c-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+
+.chip:hover {
+  border-color: var(--c-border-strong);
+  color: var(--c-text);
+}
+
+.chip.is-active {
+  border-color: transparent;
+  background: var(--c-primary-soft);
+  color: var(--c-primary);
+  font-weight: 600;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-muted);
+}
+
+.dot-success {
+  background: var(--c-success);
+}
+
+.dot-warn {
+  background: var(--c-warn);
+}
+
+.dot-error {
+  background: var(--c-error);
+}
+
+/* ---------- 区块标题 ---------- */
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 var(--sp-3);
+}
+
+.section-title {
+  margin: 0;
+  color: var(--c-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.section-desc {
+  margin: 2px 0 0;
+  color: var(--c-muted);
+  font-size: 12px;
+}
+
+/* ---------- 空状态 ---------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: 32px 16px;
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-md);
+  color: var(--c-muted);
+  text-align: center;
+}
+
+.empty .i {
+  width: 22px;
+  height: 22px;
+  opacity: 0.6;
+}
+
+.empty-title {
+  color: var(--c-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---------- 工具类 ---------- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.row-between {
+  justify-content: space-between;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.muted {
+  color: var(--c-muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.mono {
+  font-family: "Consolas", monospace;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,169 @@
+/* 弹窗只做快速入口，不做配置与日志（方案 2.1）。固定 360×≤520。 */
+
+html,
+body {
+  width: 360px;
+}
+
+body {
+  max-height: 520px;
+  overflow: hidden;
+}
+
+.launcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--c-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.brand-sub {
+  margin-top: 1px;
+  color: var(--c-muted);
+  font-size: 11px;
+}
+
+.target-card {
+  padding: 10px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-card);
+}
+
+.target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.target-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.target-desc {
+  margin-top: 1px;
+  color: var(--c-muted);
+  font-size: 11px;
+}
+
+.quick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.quick-title {
+  color: var(--c-muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.quick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quick-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--c-card);
+  color: var(--c-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.quick-item:hover {
+  border-color: var(--c-border);
+  background: var(--c-hover);
+}
+
+.quick-icon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--c-primary-soft);
+  color: var(--c-primary);
+}
+
+.quick-icon .i {
+  width: 14px;
+  height: 14px;
+}
+
+.quick-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.quick-desc {
+  margin-top: 1px;
+  color: var(--c-muted);
+  font-size: 11px;
+}
+
+.footer {
+  margin-top: 2px;
+}
+
+.footer-hint {
+  margin: 6px 0 0;
+  color: var(--c-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.empty-mini {
+  padding: 14px 10px;
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-md);
+  color: var(--c-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+}

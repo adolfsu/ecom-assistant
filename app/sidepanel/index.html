@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>电商小助手</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" id="rail" aria-label="主导航"></nav>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-target" id="topbarTarget"></div>
+        <button class="btn btn-icon" id="refreshTarget" title="刷新当前页面信息" aria-label="刷新当前页面信息"></button>
+      </header>
+      <main class="content" id="view" tabindex="-1"></main>
+    </div>
+  </div>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

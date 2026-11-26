@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>电商小助手</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="launcher">
+    <header class="brand">
+      <div class="brand-logo">EC</div>
+      <div class="grow">
+        <div class="brand-name">电商小助手</div>
+        <div class="brand-sub" id="brandSub">正在识别当前页面…</div>
+      </div>
+      <button class="btn btn-icon" id="openSettings" title="设置" aria-label="设置"></button>
+    </header>
+
+    <section class="target-card" id="targetCard"></section>
+
+    <section class="quick" id="quickBox"></section>
+
+    <footer class="footer">
+      <button class="btn btn-primary btn-block" id="openPanel">
+        打开完整面板
+      </button>
+      <p class="footer-hint">功能执行在抖店页面内完成，面板不会打断你的操作。</p>
+    </footer>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

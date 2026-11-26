@@ -259,11 +259,25 @@ function restoreState(state) {
   updateRecords();
 }
 
+/**
+ * 取「真正要操作的那个页面」。
+ * 2.0 起旧面板可能在独立小窗里打开，此时 currentWindow 的活动标签就是扩展页自己，
+ * 直接拿会报「没有可用的商品编辑页」，所以先排除扩展页，再退回抖店标签。
+ */
+function isExtensionTab(tab) {
+  return /^(chrome|edge|moz)-extension:/i.test(String(tab && tab.url || ''));
+}
+
 async function activeTab() {
-  let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  // 在侧边栏/独立窗口里 currentWindow 可能解析不到当前窗口，退一步按最后聚焦窗口取
-  if (!tab?.id) {
-    [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const pick = async query => {
+    const tabs = await chrome.tabs.query(query);
+    return tabs.find(tab => tab && tab.id && !isExtensionTab(tab)) || null;
+  };
+  let tab = await pick({ active: true, currentWindow: true });
+  if (!tab) tab = await pick({ active: true, lastFocusedWindow: true });
+  if (!tab) {
+    const tabs = await chrome.tabs.query({ url: ['https://*.jinritemai.com/*'] });
+    tab = tabs.find(item => item && item.id) || null;
   }
   if (!tab?.id) throw new Error('没有可用的商品编辑页');
   return tab;
