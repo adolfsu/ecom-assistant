@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.5';
+  const VERSION = '0.9.6';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -65,8 +65,11 @@
       /* 元素可能不可滚动 */
     }
     const rect = element.getBoundingClientRect();
-    const x = Math.min(Math.max(rect.left + rect.width / 2, 1), window.innerWidth - 2);
-    const y = Math.min(Math.max(rect.top + rect.height / 2, 1), window.innerHeight - 2);
+    // ratio 可以指定点击位置（0~1 的相对坐标），默认点正中心。
+    // 素材卡片的勾选框常在右下角，点中心只会点到图片
+    const ratio = Array.isArray(options.ratio) ? options.ratio : [0.5, 0.5];
+    const x = Math.min(Math.max(rect.left + rect.width * ratio[0], 1), window.innerWidth - 2);
+    const y = Math.min(Math.max(rect.top + rect.height * ratio[1], 1), window.innerHeight - 2);
     const target = options.strict ? element : (document.elementFromPoint(x, y) || element);
     const init = {
       bubbles: true, cancelable: true, composed: true, view: window,
@@ -1214,14 +1217,31 @@
   }
 
   /**
-   * 商品标题 → 导购短标题：前 24 个字符；标题里含英文或数字时只取前 23 个。
-   * app/shared/titles.js 有一份同样的实现，tests/check-variants.js 会比对两边结果。
+   * 一个字符占几个「字符位」：半角可打印 ASCII 算 1，其余（汉字、全角、emoji）算 2。
+   * 抖店的 24 字符上限按这个算 —— 24 个汉字等于 48 位，会被判超限。
+   */
+  function charWidth(ch) {
+    const code = String(ch ?? '').codePointAt(0) || 0;
+    return code >= 0x20 && code <= 0x7e ? 1 : 2;
+  }
+
+  /**
+   * 商品标题 → 导购短标题：按**字符位**累计，最多 24 位（含英文/数字时 23 位）。
+   * 也就是纯中文最多 12 个汉字。app/shared/titles.js 有一份同样的实现，
+   * tests/check-variants.js 会比对两边结果。
    */
   function shortTitleOf(title) {
     const chars = Array.from(String(title ?? '').trim());
     if (!chars.length) return '';
     const limit = MIXED_TITLE_RE.test(chars.join('')) ? SHORT_TITLE_LIMIT_MIXED : SHORT_TITLE_LIMIT;
-    const cut = chars.slice(0, limit).join('');
+    let width = 0;
+    let cut = '';
+    for (const ch of chars) {
+      const next = width + charWidth(ch);
+      if (next > limit) break;
+      width = next;
+      cut += ch;
+    }
     const trimmed = cut.replace(/[\s,，、;；:：!！?？.。/／|｜·]+$/, '').trim();
     return trimmed || cut.trim();
   }
@@ -1529,27 +1549,78 @@
       value === full || value === body || stripExtName(value) === body);
   }
 
-  /** 选中一张素材：先点卡片（用户也是这么点的），没勾上再补点 checkbox */
-  function selectLibraryCard(card) {
+  /**
+   * 卡片当前是否选中。
+   * 先认原生 checkbox，再看 aria-checked，最后看自定义勾选框的样式类。
+   * known=false 表示认不出来 —— 调用方不能把「认不出」当成功。
+   */
+  function cardSelectedState(card) {
     const box = card.querySelector('input[type="checkbox"]');
-    if (box && box.checked) return true;
+    if (box) return { known: true, selected: box.checked };
+    const node = card.querySelector('[aria-checked]');
+    if (node) return { known: true, selected: node.getAttribute('aria-checked') === 'true' };
+    if (card.querySelector('[class*="checked" i], [class*="selected" i]')) return { known: true, selected: true };
+    return { known: false, selected: false };
+  }
+
+  /** 卡片外观签名：认不出勾选状态时，用它判断「点了之后有没有变化」 */
+  function cardLook(card) {
     try {
-      mouseClick(card);
+      const style = getComputedStyle(card);
+      return `${card.className}|${style.borderTopColor}|${style.boxShadow}|${style.backgroundColor}`;
     } catch {
-      /* 忽略 */
+      return '';
     }
-    if (box && !box.checked) {
-      try {
-        mouseClick(box);
-      } catch {
-        try {
-          box.click();
-        } catch {
-          /* 忽略 */
-        }
+  }
+
+  /**
+   * 选中一张素材。
+   * 勾选框通常压在图片右下角，或者是个透明/被遮住的 input（pointer-events 被改过），
+   * 所以只点卡片中心点不到它。按「勾选框 click() → 直接派发 → 外层 → 右下角 → 中心」逐个试，
+   * 每一步都校验，全都不成才判失败 —— 绝不在没选中的情况下继续点「确定」。
+   */
+  async function selectLibraryCard(card) {
+    if (cardSelectedState(card).selected) return { ok: true, how: '本来就已经勾选' };
+
+    const before = cardLook(card);
+    const box = card.querySelector('input[type="checkbox"]');
+    const attempts = [];
+    if (box) {
+      attempts.push({ name: '勾选框 click()', run: () => box.click() });
+      attempts.push({ name: '勾选框直接派发事件', run: () => mouseClick(box, { strict: true }) });
+      const wrap = box.parentElement;
+      if (wrap && wrap !== card) {
+        attempts.push({ name: '勾选框外层', run: () => mouseClick(wrap, { strict: true }) });
+        attempts.push({ name: '勾选框外层坐标点击', run: () => mouseClick(wrap) });
       }
     }
-    return box ? Boolean(box.checked) : null;
+    // 勾选框在卡片右下角；点中心只会点到图片
+    attempts.push({ name: '卡片右下角', run: () => mouseClick(card, { ratio: [0.92, 0.9] }) });
+    attempts.push({ name: '卡片中心', run: () => mouseClick(card) });
+
+    for (const attempt of attempts) {
+      try {
+        attempt.run();
+      } catch {
+        continue;
+      }
+      await sleep(260);
+      const state = cardSelectedState(card);
+      if (state.selected) return { ok: true, how: attempt.name };
+      // 认不出勾选控件时，退一步看卡片外观有没有变化（出现蓝框或勾选角标）
+      if (!state.known && cardLook(card) !== before) return { ok: true, how: `${attempt.name}（卡片外观已变化）` };
+    }
+
+    return { ok: false, how: '所有点击方式都没能让它出现勾选' };
+  }
+
+  /** 关掉素材库弹窗（没选中素材时用，避免弹窗留着挡住发布页） */
+  function closeLibraryDialog(dialog) {
+    if (!dialog) return false;
+    const cancel = Array.from(dialog.querySelectorAll('button, [role="button"]'))
+      .filter(visible)
+      .filter(element => /^(取消|关闭)$/.test(norm(element.textContent)))[0];
+    return cancel ? mouseClick(cancel) : false;
   }
 
   function findLibraryConfirm(dialog) {
@@ -1621,29 +1692,38 @@
 
     if (!target) {
       const seen = libraryCards(dialog).slice(0, 3).map(card => cardName(card)).filter(Boolean);
-      try {
-        const cancel = Array.from(dialog.querySelectorAll('button, [role="button"]'))
-          .filter(visible)
-          .filter(element => /^(取消|关闭)$/.test(norm(element.textContent)))[0];
-        if (cancel) mouseClick(cancel);
-      } catch {
-        /* 忽略 */
-      }
+      closeLibraryDialog(dialog);
       throw new Error(seen.length
         ? `素材库里没搜到「${imageName}」（当前前三个：${seen.join('、')}），请确认左侧已选中目标文件夹`
         : `素材库里没搜到「${imageName}」，请确认左侧已选中目标文件夹`);
     }
 
-    const checked = selectLibraryCard(target);
-    await sleep(350);
-    logStep(`已选中「${cardName(target) || imageName}」，勾选：${checked === null ? '无法判定' : (checked ? '已勾选' : '未勾选')}`);
+    const picked = await selectLibraryCard(target);
+    if (!picked.ok) {
+      // 没勾上就别点确定：平台会静默不响应，白等到超时，主图还可能被换成别的
+      closeLibraryDialog(dialog);
+      throw new Error(`素材库里没能选中「${imageName}」（${picked.how}），已取消，避免主图被换错`);
+    }
+    logStep(`已选中素材「${cardName(target) || imageName}」（${picked.how}）`);
 
     const confirm = findLibraryConfirm(dialog);
     if (!confirm) throw new Error('素材库弹窗里没找到「确定」按钮');
     mouseClick(confirm);
     logStep('已点「确定」，等待主图更新…');
 
-    await waitFor(() => !findLibrarySearch(), 10000, 300);
+    // 点了确定必须看到弹窗真的关掉：没关闭说明平台没接受（典型原因就是没选中素材）
+    let closed = await waitFor(() => !findLibrarySearch(), 6000, 300);
+    if (!closed) {
+      const again = findLibraryConfirm(dialog);
+      if (again) {
+        logStep('素材库没关闭，补点一次「确定」');
+        mouseClick(again);
+        closed = await waitFor(() => !findLibrarySearch(), 6000, 300);
+      }
+    }
+    if (!closed) {
+      throw new Error('点了「确定」素材库没有关闭（平台没接受，多半是素材没真正选中），已停止这一条');
+    }
 
     const after = await waitFor(() => {
       const image = mainImageList()[0];

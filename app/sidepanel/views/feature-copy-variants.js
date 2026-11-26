@@ -18,7 +18,7 @@ import { KEYS, read, writeMany, readMany, onChange } from '../../shared/storage.
 import { parseIds } from '../../shared/ids.js';
 import { columnValues } from '../../shared/sku.js';
 import { parseTitles, pickImageNames, buildVariants } from '../../shared/images.js';
-import { shortTitleOf } from '../../shared/titles.js';
+import { shortTitleOf, textWidth } from '../../shared/titles.js';
 import { copyWithFeedback } from '../../shared/clipboard.js';
 import { variantFailure, variantRunText } from '../../shared/run-format.js';
 import { recordRun, runStatus } from '../../shared/tasks.js';
@@ -370,7 +370,10 @@ export async function render(ctx, feature) {
         h('tbody', {}, built.items.slice(0, PREVIEW_LIMIT).map(item => h('tr', {}, [
           h('td', { class: 'mono', text: String(item.no) }),
           h('td', { title: item.title, text: item.title }),
-          h('td', { title: shortTitleOf(item.title), text: shortTitleOf(item.title) }),
+          h('td', {
+            title: `${shortTitleOf(item.title)}（${textWidth(shortTitleOf(item.title))} 字符位，上限 24）`,
+            text: shortTitleOf(item.title),
+          }),
           h('td', { class: 'mono', title: item.image, text: item.image }),
         ]))),
       ]);

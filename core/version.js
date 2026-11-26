@@ -11,7 +11,7 @@
  * 而不是带着旧的搜索判定继续跑。
  */
 
-export const LEGACY_SCRIPT_VERSION = '0.9.5';
+export const LEGACY_SCRIPT_VERSION = '0.9.6';
 
 export function manifestVersion() {
   try {
