@@ -1512,7 +1512,7 @@
    * execCommand('insertText') 触发的是真实输入事件，React 会同步 state，所以优先走它。
    */
   async function typeLibrarySearch(name) {
-    const input = findLibrarySearch();
+    let input = findLibrarySearch();
     if (!input) return false;
     try {
       input.focus();
@@ -1523,6 +1523,16 @@
 
     // 先清空：输入框里留着上一次的关键词会干扰平台自己的搜索
     setNativeValue(input, '');
+    await sleep(120);
+    // 清空也可能触发重渲染，重新取一次再输入，别对着已经换掉的节点打字
+    input = findLibrarySearch() || input;
+    try {
+      input.focus();
+      input.select();
+    } catch {
+      /* 忽略 */
+    }
+
     let typed = false;
     try {
       typed = document.execCommand('insertText', false, name);
@@ -1534,17 +1544,25 @@
 
     // 值被打回去了（state 没跟上），再插一次
     if (String(input.value || '') !== name) {
+      const retryInput = findLibrarySearch() || input;
       try {
-        input.select();
+        retryInput.focus();
+        retryInput.select();
         document.execCommand('insertText', false, name);
       } catch {
         /* 忽略 */
       }
+      if (String(retryInput.value || '') !== name) setNativeValue(retryInput, name);
       await sleep(220);
+      return typeCheck(retryInput, name);
     }
 
+    return typeCheck(input, name);
+  }
+
+  /** 二次确认输入框里的值（顺便把回车发出去） */
+  function typeCheck(input, name) {
     pressKey(input, 'Enter', 13);
-    await sleep(150);
     return String(input.value || '') === name;
   }
 
