@@ -303,3 +303,14 @@ platforms/
   删掉右下角那一路。
 - `cardSelectedState` 只认 `input.checked` / `aria-checked`；自定义方块靠 `checkMarks` +
   `cardLook` 比较点前点后，避免把未选中卡片误判成已选中。版本 2.1.5 / 0.9.7。
+
+### 2.1.6 修复：素材库「有时搜不到」
+
+- 搜索框是受控组件，`setNativeValue` 不改 state → 回车按旧关键词搜、渲染又打回旧值。
+  改为 `execCommand('insertText')` + 回读 `input.value` 校验 + 失败重插，值站住才回车。
+- `findFirstMatch` 只看 `list[0]` → 改为遍历全部卡片，按 `nameScore`（文件名全等 3 / 去扩展名 2）
+  取最优；文件名标准化（小写、去空白、全角括号转半角）。
+- 搜索后素材库整块重渲染，旧 `dialog` 失效 → 统一走 `liveDialog()`；`selectLibraryCard`
+  改为接受取卡片的函数，每步重新解析。
+- 兜底：补点「查询」/ 图标按钮 → 清空重输 → 列表滚动 8 屏；失败文案带上「列表几张 + 前三个名字」。
+  版本 2.1.6 / 0.9.8。

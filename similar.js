@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.7';
+  const VERSION = '0.9.8';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -1503,50 +1503,207 @@
     return document.body;
   }
 
-  /** 素材网格里的卡片 */
-  function libraryCards(dialog) {
-    if (!dialog) return [];
+  /**
+   * 把关键词写进素材库搜索框。
+   *
+   * 关键：平台的输入框是受控组件，直接改 DOM 的 value（setNativeValue）不会更新它的 state，
+   * 下一次渲染会把值打回上一个关键词 —— 于是平台按旧词搜索，我们却以为搜了新词，
+   * 表现就是「有时能搜到、有时搜不到，而且每次搜不到的那张都不一样」（取决于渲染/防抖的时序）。
+   * execCommand('insertText') 触发的是真实输入事件，React 会同步 state，所以优先走它。
+   */
+  async function typeLibrarySearch(name) {
+    const input = findLibrarySearch();
+    if (!input) return false;
+    try {
+      input.focus();
+      input.select();
+    } catch {
+      /* 忽略 */
+    }
+
+    // 先清空：输入框里留着上一次的关键词会干扰平台自己的搜索
+    setNativeValue(input, '');
+    let typed = false;
+    try {
+      typed = document.execCommand('insertText', false, name);
+    } catch {
+      typed = false;
+    }
+    if (!typed || String(input.value || '') !== name) setNativeValue(input, name);
+    await sleep(320);
+
+    // 值被打回去了（state 没跟上），再插一次
+    if (String(input.value || '') !== name) {
+      try {
+        input.select();
+        document.execCommand('insertText', false, name);
+      } catch {
+        /* 忽略 */
+      }
+      await sleep(220);
+    }
+
+    pressKey(input, 'Enter', 13);
+    await sleep(150);
+    return String(input.value || '') === name;
+  }
+
+  /** 素材库的「查询 / 搜索」按钮（有的库只认按钮，不认回车） */
+  function findLibraryQueryButton(root) {
+    if (!root) return null;
+    return Array.from(root.querySelectorAll('button, [role="button"], a, span, div'))
+      .filter(visible)
+      .filter(element => /^(查询|搜索)$/.test(compact(element.textContent)))
+      .sort((left, right) => {
+        const a = left.getBoundingClientRect();
+        const b = right.getBoundingClientRect();
+        return a.width * a.height - b.width * b.height; // 取最内层那个小元素
+      })[0] || null;
+  }
+
+  /** 搜索框右侧那个纯图标按钮（没有文字时的兜底） */
+  function findSearchIconButton(input) {
+    if (!input) return null;
+    const box = input.getBoundingClientRect();
+    const near = Array.from(document.querySelectorAll('button, [role="button"], svg, i, span, div'))
+      .filter(visible)
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width > 60 || rect.height > 60 || rect.width < 8 || rect.height < 8) return false;
+        // 落在输入框右侧 70px 内、垂直方向基本对齐
+        if (rect.left < box.right - 8 || rect.left > box.right + 70) return false;
+        return rect.bottom > box.top && rect.top < box.bottom;
+      })
+      .sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        return ra.width * ra.height - rb.width * rb.height;
+      });
+
+    const innermost = near[0];
+    if (!innermost) return null;
+    // 图标本身点不动，往上找一层可点的
+    let node = innermost;
+    for (let depth = 0; node && depth < 3; depth++, node = node.parentElement) {
+      if (isClickable(node)) return node;
+    }
+    return innermost;
+  }
+
+  /** 在素材列表里往下滚动找目标（搜索没生效时兜底：列表是整个文件夹，目标可能在下方） */
+  async function scrollLibraryFor(findTarget, rounds = 8) {
+    const hit = findTarget();
+    if (hit) return hit;
+    for (let index = 0; index < rounds; index++) {
+      const dialog = findLibraryDialog();
+      const grid = libraryGrid(dialog) || dialog;
+      if (!grid) return null;
+      const scroller = grid.scrollHeight > grid.clientHeight + 8 ? grid : (grid.parentElement || grid);
+      try {
+        scroller.scrollTop = scroller.scrollHeight;
+      } catch {
+        /* 忽略 */
+      }
+      await sleep(650);
+      const found = findTarget();
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** 素材网格：弹层里图片最多的那个容器（会随搜索整块重渲染，别长期持有） */
+  function libraryGrid(dialog) {
+    if (!dialog) return null;
     let best = null;
     for (const grid of Array.from(dialog.querySelectorAll('[class*="grid" i]'))) {
       const count = Array.from(grid.children)
         .filter(child => child.querySelector && child.querySelector('img')).length;
       if (count && (!best || count > best.count)) best = { grid, count };
     }
-    if (best) {
-      return Array.from(best.grid.children).filter(child => child.querySelector && child.querySelector('img'));
+    return best ? best.grid : null;
+  }
+
+  /**
+   * 素材卡片列表。
+   * 优先从「文件名节点」往上回溯到卡片：卡片容器的 class 平台每次发版都可能改，
+   * 文件名节点（fileName）稳定得多。一个都回溯不到才退回「网格子元素」。
+   */
+  function libraryCards(dialog) {
+    if (!dialog) return [];
+    const looksLikeCard = element => Boolean(
+      element && element !== dialog && element.querySelector
+      && element.querySelector('img')
+      && /\.(?:jpe?g|png|webp|gif|bmp)/i.test(element.textContent || '')
+    );
+
+    const cards = [];
+    for (const node of Array.from(dialog.querySelectorAll('[class*="fileName" i]'))) {
+      let card = node;
+      for (let depth = 0; card && depth < 5; depth++, card = card.parentElement) {
+        if (card === dialog) break;
+        if (looksLikeCard(card)) break;
+      }
+      if (looksLikeCard(card) && !cards.includes(card)) cards.push(card);
     }
-    // 没有 grid 容器时，退回「文件名元素的祖父级」
-    const names = Array.from(dialog.querySelectorAll('[class*="fileName" i]'));
-    if (!names.length) return [];
-    const parent = names[0].parentElement && names[0].parentElement.parentElement;
-    return parent ? Array.from(parent.children).filter(child => child.querySelector && child.querySelector('img')) : [];
+    if (cards.length) return cards;
+
+    const grid = libraryGrid(dialog);
+    if (grid) {
+      return Array.from(grid.children).filter(child => child.querySelector && child.querySelector('img'));
+    }
+    return [];
   }
 
   function cardName(card) {
     if (!card) return '';
     const node = card.querySelector('[class*="fileName" i]') || card.querySelector('[class*="name" i]');
-    return norm(node ? node.textContent : '');
+    const text = norm(node ? node.textContent : card.textContent);
+    if (!text) return '';
+    // 卡片里还常夹着尺寸、状态文字，抠出第一个像文件名的片段
+    const found = text.match(/[^\s/\\]+\.(?:jpe?g|png|webp|gif|bmp)/i);
+    return found ? norm(found[0]) : text;
   }
 
   function stripExtName(name) {
     return String(name || '').replace(/\.(jpe?g|png|webp|gif|bmp)$/i, '');
   }
 
-  /** 卡片名与目标名是否算同一张：抠出文件名后**全等**比较（不用包含，避免 1.jpg 命中 11.jpg） */
-  function nameMatches(cardText, imageName) {
-    const text = norm(cardText).toLowerCase();
-    const full = norm(imageName).toLowerCase();
-    const body = norm(stripExtName(imageName)).toLowerCase();
-    if (!text || !full) return false;
+  /**
+   * 文件名标准化：小写、去空白、全角括号/冒号转半角。
+   * 平台有时把「创意图 (2).jpg」显示成「创意图（2）.jpg」或吃掉空格，逐字比会认不出。
+   */
+  function normalizeName(value) {
+    return norm(value)
+      .toLowerCase()
+      .replace(/（/g, '(')
+      .replace(/）/g, ')')
+      .replace(/：/g, ':')
+      .replace(/\s+/g, '');
+  }
 
-    // 卡片文本里常夹着尺寸（「1.jpg」旁边还有 800*800），先抠出文件名再逐字比较。
-    // 不用「包含」：搜 1.jpg 时 11.jpg 也包含它，会选错图。
-    const candidates = [text];
+  /**
+   * 卡片名与目标名的匹配分：3 = 文件名全等，2 = 去扩展名后相等，0 = 不匹配。
+   * 不用「包含」：搜 1.jpg 时 11.jpg 也包含它，会选错图。
+   */
+  function nameScore(cardText, imageName) {
+    const full = normalizeName(imageName);
+    if (!full) return 0;
+    const text = normalizeName(cardText);
+    if (!text) return 0;
+    const body = normalizeName(stripExtName(imageName));
+
+    const tokens = [text];
     const found = text.match(/[^\s/\\]+\.(?:jpe?g|png|webp|gif|bmp)/i);
-    if (found) candidates.push(found[0]);
+    if (found) tokens.push(normalizeName(found[0]));
 
-    return candidates.some(value =>
-      value === full || value === body || stripExtName(value) === body);
+    if (tokens.some(token => token === full)) return 3;
+    if (tokens.some(token => normalizeName(stripExtName(token)) === body)) return 2;
+    return 0;
+  }
+
+  /** 卡片名与目标名是否算同一张 */
+  function nameMatches(cardText, imageName) {
+    return nameScore(cardText, imageName) > 0;
   }
 
   /**
@@ -1628,54 +1785,69 @@
    * 选中一张素材。
    * 抖店素材卡片的勾选框压在**缩略图右上角**（不在卡片本体里，也可能是个透明 input），
    * 所以点卡片中心只会点到图片。按「勾选框 click() → 直接派发 → 外层 → 勾选框实际位置
-   * → 缩略图右上角 → 卡片右上角 → 右下角 → 中心」逐个试，每一步都校验，
+   * → 缩略图右上角 → 卡片右上角 → 中心」逐个试，每一步都校验，
    * 全都不成才判失败 —— 绝不在没选中的情况下继续点「确定」。
+   *
+   * 参数可以是卡片元素，也可以是「取卡片」的函数：列表会随搜索整块重渲染，
+   * 旧引用会脱离文档、点了也没反应，所以每换一种点法都重新取一次。
    */
-  async function selectLibraryCard(card) {
-    if (cardSelectedState(card).selected) return { ok: true, how: '本来就已经勾选' };
+  async function selectLibraryCard(source) {
+    const getCard = typeof source === 'function' ? source : () => source;
+    const first = getCard();
+    if (!first) return { ok: false, how: '卡片还没渲染出来' };
+    if (cardSelectedState(first).selected) return { ok: true, how: '本来就已经勾选' };
 
-    const before = cardLook(card);
-    const marks = checkMarks(card);
+    const before = cardLook(first);
+    const marks = checkMarks(first);
     // 点了一次之后可能「勾上又一次点掉了」，所以每一步都要重看状态
-    const picked = () => {
+    const picked = card => {
+      if (!card) return false;
       const state = cardSelectedState(card);
       if (state.selected) return true;
       if (!state.known && (checkMarks(card) > marks || cardLook(card) !== before)) return true;
       return false;
     };
 
-    const box = card.querySelector('input[type="checkbox"], [role="checkbox"]');
-    const attempts = [];
-    if (box) {
-      attempts.push({ name: '勾选框 click()', run: () => box.click() });
-      attempts.push({ name: '勾选框直接派发事件', run: () => mouseClick(box, { strict: true }) });
-      const wrap = box.parentElement;
-      if (wrap && wrap !== card) {
-        attempts.push({ name: '勾选框外层', run: () => mouseClick(wrap, { strict: true }) });
-        attempts.push({ name: '勾选框外层坐标点击', run: () => mouseClick(wrap) });
-      }
-      const ratio = boxRatio(card, box);
-      if (ratio) attempts.push({ name: '勾选框实际位置', run: () => mouseClick(card, { ratio }) });
-    }
-    // 勾选框压在缩略图右上角，点图片的右上区域最容易命中；卡片右上角同理（卡片还含文件名，比例偏低）
-    attempts.push({
-      name: '缩略图右上角',
-      run: () => {
-        const thumb = card.querySelector('img');
-        return thumb ? mouseClick(thumb, { ratio: [0.9, 0.1] }) : false;
-      }
-    });
-    attempts.push({ name: '卡片右上角', run: () => mouseClick(card, { ratio: [0.9, 0.1] }) });
-    attempts.push({ name: '卡片中心', run: () => mouseClick(card) });
+    const boxOf = card => card.querySelector('input[type="checkbox"], [role="checkbox"]');
+    const wrapOf = card => {
+      const box = boxOf(card);
+      return box && box.parentElement !== card ? box.parentElement : null;
+    };
 
-    for (const attempt of attempts) {
+    const plan = [
+      { name: '勾选框 click()', run: card => { const box = boxOf(card); return box ? box.click() : false; } },
+      { name: '勾选框直接派发事件', run: card => { const box = boxOf(card); return box ? mouseClick(box, { strict: true }) : false; } },
+      { name: '勾选框外层', run: card => { const wrap = wrapOf(card); return wrap ? mouseClick(wrap, { strict: true }) : false; } },
+      { name: '勾选框外层坐标点击', run: card => { const wrap = wrapOf(card); return wrap ? mouseClick(wrap) : false; } },
+      {
+        name: '勾选框实际位置',
+        run: card => {
+          const box = boxOf(card);
+          const ratio = box ? boxRatio(card, box) : null;
+          return ratio ? mouseClick(card, { ratio }) : false;
+        }
+      },
+      {
+        name: '缩略图右上角',
+        run: card => {
+          const thumb = card.querySelector('img');
+          return thumb ? mouseClick(thumb, { ratio: [0.9, 0.1] }) : false;
+        }
+      },
+      { name: '卡片右上角', run: card => mouseClick(card, { ratio: [0.9, 0.1] }) },
+      { name: '卡片中心', run: card => mouseClick(card) },
+    ];
+
+    for (const step of plan) {
+      const card = getCard();
+      if (!card) return { ok: false, how: '卡片在点击过程中消失了（列表又刷新了一次）' };
       try {
-        attempt.run();
+        step.run(card);
       } catch {
         continue;
       }
       await sleep(280);
-      if (picked()) return { ok: true, how: attempt.name };
+      if (picked(getCard() || card)) return { ok: true, how: step.name };
     }
 
     return { ok: false, how: '所有点击方式都没能让它出现勾选' };
@@ -1729,51 +1901,83 @@
 
     const dialog = await waitFor(findLibraryDialog, 15000, 400);
     if (!dialog) throw new Error('点击「图库替换」后没有出现素材库弹窗');
-    const input = findLibrarySearch(dialog);
-    if (!input) throw new Error('素材库弹窗里没有「查询图片名称」搜索框');
+    if (!findLibrarySearch(dialog)) throw new Error('素材库弹窗里没有「查询图片名称」搜索框');
 
-    logStep(`素材库已打开，搜索「${imageName}」`);
-    input.focus();
-    setNativeValue(input, imageName);
-    pressKey(input, 'Enter', 13);
+    // 素材库会随搜索整块重渲染，旧节点会脱离文档 —— 每次都重新找，不长期持有
+    const liveDialog = () => (dialog.isConnected ? dialog : findLibraryDialog());
+    const liveInput = () => findLibrarySearch(liveDialog() || document);
 
-    const findFirstMatch = () => {
-      const list = libraryCards(dialog);
-      if (!list.length) return null;
-      const first = list[0];
-      return nameMatches(cardName(first), imageName) ? first : null;
+    // 搜索没有真正生效时，列表里是整个文件夹的图，目标不一定在第一张，
+    // 所以扫全部卡片取「匹配分最高」的那张，而不是只看第一张
+    const findTarget = () => {
+      const scope = liveDialog();
+      if (!scope) return null;
+      let best = null;
+      for (const card of libraryCards(scope)) {
+        const score = nameScore(cardName(card), imageName);
+        if (!score) continue;
+        if (!best || score > best.score) best = { card, score };
+        if (score === 3) break;
+      }
+      return best ? best.card : null;
+    };
+    const listNames = () => {
+      const scope = liveDialog();
+      return scope ? libraryCards(scope).map(card => cardName(card)).filter(Boolean) : [];
     };
 
-    let target = await waitFor(findFirstMatch, 12000, 400);
+    logStep(`素材库已打开，搜索「${imageName}」`);
+    const typed = await typeLibrarySearch(imageName);
+    if (!typed) logStep('搜索框的值没能保留（平台把它打回去了），继续按下面的兜底试');
+
+    let target = await waitFor(findTarget, 8000, 350);
+
+    // 1) 回车可能没被平台接住（有的库只认「查询」按钮），补点一次
     if (!target) {
-      // 有的素材库不认回车，只认旁边的「查询」按钮
-      const query = Array.from(dialog.querySelectorAll('button, [role="button"], span, div'))
-        .filter(visible)
-        .filter(element => /^(查询|搜索)$/.test(norm(element.textContent)))[0];
+      const names = listNames();
+      logStep(`回车后没匹配到（列表 ${names.length} 张：${names.slice(0, 3).join('、') || '空'}），补点「查询」再等`);
+      const query = findLibraryQueryButton(liveDialog()) || findSearchIconButton(liveInput());
       if (query) {
-        logStep('素材库没有响应回车，补点一次「查询」');
         mouseClick(query);
-        target = await waitFor(findFirstMatch, 8000, 400);
+        target = await waitFor(findTarget, 8000, 350);
+      } else {
+        logStep('没找到「查询」按钮，跳过这一步');
       }
     }
 
+    // 2) 输入框是受控组件，偶尔把值打回上一个关键词；清空重打一次
     if (!target) {
-      const seen = libraryCards(dialog).slice(0, 3).map(card => cardName(card)).filter(Boolean);
-      closeLibraryDialog(dialog);
-      throw new Error(seen.length
-        ? `素材库里没搜到「${imageName}」（当前前三个：${seen.join('、')}），请确认左侧已选中目标文件夹`
-        : `素材库里没搜到「${imageName}」，请确认左侧已选中目标文件夹`);
+      logStep('还是没匹配到，清空搜索框重新输入一次');
+      await typeLibrarySearch(imageName);
+      const query = findLibraryQueryButton(liveDialog()) || findSearchIconButton(liveInput());
+      if (query) mouseClick(query);
+      target = await waitFor(findTarget, 8000, 350);
     }
 
-    const picked = await selectLibraryCard(target);
+    // 3) 搜索彻底没生效时，列表是整个文件夹；往下滚动加载，把后面的图也过一遍
+    if (!target) {
+      logStep('搜索可能没生效，改为在列表里往下滚动寻找');
+      target = await scrollLibraryFor(findTarget, 8);
+    }
+
+    if (!target) {
+      const names = listNames();
+      closeLibraryDialog(liveDialog());
+      throw new Error(names.length
+        ? `素材库里没搜到「${imageName}」（列表 ${names.length} 张，前三个：${names.slice(0, 3).join('、')}），请确认左侧已选中目标文件夹`
+        : `素材库里没搜到「${imageName}」（列表是空的），请确认左侧已选中目标文件夹、且图库里有这张图`);
+    }
+
+    // 传函数而不是元素：列表重渲染后旧元素点不动，selectLibraryCard 会重新取
+    const picked = await selectLibraryCard(findTarget);
     if (!picked.ok) {
       // 没勾上就别点确定：平台会静默不响应，白等到超时，主图还可能被换成别的
-      closeLibraryDialog(dialog);
+      closeLibraryDialog(liveDialog());
       throw new Error(`素材库里没能选中「${imageName}」（${picked.how}），已取消，避免主图被换错`);
     }
-    logStep(`已选中素材「${cardName(target) || imageName}」（${picked.how}）`);
+    logStep(`已选中素材「${cardName(findTarget()) || imageName}」（${picked.how}）`);
 
-    const confirm = findLibraryConfirm(dialog);
+    const confirm = findLibraryConfirm(liveDialog());
     if (!confirm) throw new Error('素材库弹窗里没找到「确定」按钮');
     mouseClick(confirm);
     logStep('已点「确定」，等待主图更新…');
@@ -1781,7 +1985,7 @@
     // 点了确定必须看到弹窗真的关掉：没关闭说明平台没接受（典型原因就是没选中素材）
     let closed = await waitFor(() => !findLibrarySearch(), 6000, 300);
     if (!closed) {
-      const again = findLibraryConfirm(dialog);
+      const again = findLibraryConfirm(liveDialog());
       if (again) {
         logStep('素材库没关闭，补点一次「确定」');
         mouseClick(again);
