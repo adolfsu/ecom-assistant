@@ -251,7 +251,7 @@ platforms/
 2. 执行器注册（`start / pause / resume / cancel / getStatus`），发布相似品优先接；
 3. 若要做到「SKU 填充可暂停/可续跑」，需要给 `content.js` 增加进度上报与停止检查点（只加不改填充流程）。
 
-## 十五、阶段一追加：第三个功能（批量复制变体）
+## 十五、阶段一追加：第三个功能（裂变链接，原「批量复制变体」）
 
 用户提出「同一个链接复制相似品、逐条换标题和主图」，评估见 `feature-title-image-assessment.md`。
 它没有另起一条执行链路，而是复用现有的「发布相似品」跨标签页协议，只在两处扩展：
@@ -264,3 +264,12 @@ platforms/
 新增共享模块 `app/shared/images.js`（图片名过滤/自然排序/标题配对），
 新增视图 `views/feature-copy-variants.js`（四步向导），新增测试 `tests/check-variants.js`。
 功能清单一律来自注册中心，公共导航/筛选/任务中心零改动。
+
+### 2.1.1 补充
+
+- 展示名：发布相似品 → **旧链上新**，批量复制变体 → **裂变链接**（`featureId` 不变）。
+- 裂变链接新增「导购短标题」填写：整条标题 + 前 24 字（含英文/数字取 23），
+  规则在 `app/shared/titles.js` 与 `similar.js` 各一份，`tests/check-variants.js` 比对两边结果。
+- 裂变链接暂时只填不发：视图里 `PUBLISH_ENABLED = false` → `VARIANT_RUN.publish = false` →
+  `variantPending.publish = false` → 发布页填完即回报 `filled + keepTab`，不点发布、不关页面。
+  改回 `true` 即恢复原有发布流程。

@@ -9,7 +9,7 @@
 <body>
 <main>
   <h1>电商小助手</h1>
-  <p class="sub">批量创建 SKU 并填写价格编码；也可按商品 ID 批量发布相似品。</p>
+  <p class="sub">批量创建 SKU 并填写价格编码；也可按商品 ID 旧链上新。</p>
   <button id="openPanel" class="ghost narrow" hidden>固定到侧边栏（切换标签页不关闭）</button>
   <label class="file">选择商品 Excel 表<input id="file" type="file" accept=".xlsx"></label>
   <div id="status" class="status">请选择 .xlsx 文件</div>
@@ -37,13 +37,13 @@
 
   <hr class="divide">
   <section id="similar">
-    <h2>发布相似品</h2>
+    <h2>旧链上新</h2>
     <p class="sub">先切到抖店「商品列表」标签页。工具会逐条：搜索 ID → 发布相似品 → 确认 → 等新标签页加载后点「发布商品」→ 成功则关闭该标签页并继续下一条。</p>
     <label>商品 ID（每行一个，也支持逗号或空格分隔）
       <textarea id="similarIds" rows="4" spellcheck="false" placeholder="3600000000000000001&#10;3600000000000000002"></textarea>
     </label>
     <label>或从表格某列读取 <select id="similarColumn"><option value="">— 不读取 —</option></select></label>
-    <button id="similarStart" class="primary">开始批量发布相似品</button>
+    <button id="similarStart" class="primary">开始批量上新</button>
     <button id="similarStop" class="ghost">停止</button>
     <button id="similarDiag" class="ghost">检查列表页结构</button>
     <pre id="similarDiagBox" class="diag" hidden></pre>

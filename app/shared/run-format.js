@@ -41,7 +41,7 @@ export function fillRunText(run, onlyFailed = false) {
   return lines.join('\n');
 }
 
-/* ---------------- 批量发布相似品 ---------------- */
+/* ---------------- 旧链上新 ---------------- */
 
 /** 失败原因：优先用采集到的校验提示（多条合并），其次用 reason */
 export function similarFailure(item) {
@@ -63,13 +63,19 @@ export function similarRunText(run, onlyFailed = false) {
   return lines.join('\n');
 }
 
-/* ---------------- 批量复制变体 ---------------- */
+/* ---------------- 裂变链接 ---------------- */
 
 /** 失败原因：采集到的校验提示优先，其次 reason */
 export function variantFailure(item) {
   const issues = Array.isArray(item?.issues) ? item.issues.filter(Boolean) : [];
   const text = issues.length ? issues.join('；') : String(item?.reason || '').trim();
   return text || '原因未记录';
+}
+
+/** 成功分两种：提交成功（成功）与只填不发的版本（已填未发） */
+export function variantStatus(item) {
+  if (!item?.ok) return '失败';
+  return item.filled ? '已填未发' : '成功';
 }
 
 export function variantRunText(run, onlyFailed = false) {
@@ -80,7 +86,7 @@ export function variantRunText(run, onlyFailed = false) {
   for (const item of rows) {
     lines.push(onlyFailed
       ? `${item.no}\t${item.title || ''}\t${item.image || ''}\t${variantFailure(item)}`
-      : `${item.no}\t${item.title || ''}\t${item.image || ''}\t${item.ok ? '成功' : '失败'}\t${item.ok ? '' : variantFailure(item)}`);
+      : `${item.no}\t${item.title || ''}\t${item.image || ''}\t${variantStatus(item)}\t${item.ok ? '' : variantFailure(item)}`);
   }
   return lines.join('\n');
 }

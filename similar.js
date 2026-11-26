@@ -1,11 +1,14 @@
 /*
- * 抖店「发布相似品」批处理
+ * 抖店「发布相似品」批处理（侧边栏里叫「旧链上新」）
  * 列表页：按 ID 搜索 → 点「发布相似品」→ 确认弹窗选第一项 → 确定（抖店自己打开新标签页）
  * 发布页：等页面就绪 → 点「发布商品」→ 等「商品提交成功」→ 通知后台关闭标签页
  * 队列由列表页脚本自己驱动，每条之间等后台转发的「发布页已完成」信号。
+ *
+ * 同一份脚本还承载「裂变链接」（同一个源商品连点 N 次，每条换标题和主图）：
+ * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.2';
+  const VERSION = '0.9.3';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -762,7 +765,7 @@
 
   /**
    * 搜索并定位某个商品，返回 `{ el, fallback }`。
-   * 变体模式只调用一次；批量发布相似品每条调用一次。
+   * 裂变链接只调用一次；旧链上新每条调用一次。
    */
   async function searchSource(id, label) {
     const input = await waitFor(findSearchInput, 15000, 300);
@@ -983,7 +986,7 @@
     return { opened: true };
   }
 
-  /** 批量发布相似品的单条流程：搜一次 → 点开 → 等接管 */
+  /** 旧链上新的单条流程：搜一次 → 点开 → 等接管 */
   async function searchAndOpenSimilar(id, index, total) {
     const label = `第 ${index + 1}/${total} 条：`;
     const found = await searchSource(id, label);
@@ -1008,8 +1011,37 @@
     });
   }
 
-  /** 标题输入框：优先 placeholder/aria-label 写了「标题」的，其次看附近文案 */
-  function findTitleField() {
+  const SHORT_TITLE_LIMIT = 24;
+  const SHORT_TITLE_LIMIT_MIXED = 23;
+  const MIXED_TITLE_RE = /[0-9０-９A-Za-zＡ-Ｚａ-ｚ]/;
+
+  /** 按用户看到的字符数算（emoji 算一个，不按 UTF-16 拆半） */
+  function charLength(value) {
+    return Array.from(String(value ?? '')).length;
+  }
+
+  /**
+   * 商品标题 → 导购短标题：前 24 个字符；标题里含英文或数字时只取前 23 个。
+   * app/shared/titles.js 有一份同样的实现，tests/check-variants.js 会比对两边结果。
+   */
+  function shortTitleOf(title) {
+    const chars = Array.from(String(title ?? '').trim());
+    if (!chars.length) return '';
+    const limit = MIXED_TITLE_RE.test(chars.join('')) ? SHORT_TITLE_LIMIT_MIXED : SHORT_TITLE_LIMIT;
+    const cut = chars.slice(0, limit).join('');
+    const trimmed = cut.replace(/[\s,，、;；:：!！?？.。/／|｜·]+$/, '').trim();
+    return trimmed || cut.trim();
+  }
+
+  /**
+   * 发布页上的两个标题框：商品标题（完整）与导购短标题（24 字）。
+   * 认法：placeholder/aria-label 的文案 → 输入框所在行上的标签文字 → maxlength 大小兜底。
+   *
+   * 行标签只认「最近一层含『标题』字样、且长度不超过 120」的容器：
+   * 再往上就是整个基础信息表单，里面同时有「商品标题」和「导购短标题」两个词，
+   * 拿它判断会把两个框认成同一个。
+   */
+  function titleFields() {
     const fields = allVisible('input, textarea')
       .filter(element => !element.disabled && !element.readOnly)
       .filter(element => {
@@ -1017,52 +1049,96 @@
         return element.tagName === 'TEXTAREA' || type === '' || type === 'text';
       });
 
-    const label = element => `${element.placeholder || ''} ${element.getAttribute('aria-label') || ''}`;
-    // 先找明确写「商品标题」的，避免命中「卖点标题」「短标题」这类别的输入框
-    const exact = fields.find(element => /商品标题/.test(label(element)));
-    if (exact) return exact;
-    const loose = fields.find(element => /标题/.test(label(element)));
-    if (loose) return loose;
-
-    // 标题两个字的 label 常在同一行左侧，往上找四层看有没有「商品标题」
-    for (const element of fields) {
+    const hints = element => `${element.placeholder || ''} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('name') || ''}`;
+    /**
+     * 找输入框所在行的标签文字。
+     * exclude 用来挡「外层容器同时包住两个标题框」的情况：那一层两个词都有，
+     * 拿它判断会把商品标题框认成短标题框（反之亦然）。挡掉后交给 maxlength 兜底。
+     */
+    const nearLabel = (element, pattern, exclude) => {
       let node = element.parentElement;
-      for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
         const text = norm(node.textContent || '');
-        if (text.includes('商品标题')) return element;
-        if (text.length > 240) break;
+        if (!text || text.length > 120) continue;
+        if (!/标题/.test(text)) continue;
+        if (exclude && exclude.test(text)) return false;
+        return pattern.test(text);
+      }
+      return false;
+    };
+    const topMost = list => list
+      .slice()
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0] || null;
+
+    // 先认短标题：它的名字更独特，认错方向再反过来排除不容易串
+    const short = fields.find(element => /导购短标题|短标题/.test(hints(element)))
+      || fields.find(element => nearLabel(element, /导购短标题/, /商品标题/))
+      || fields.find(element => nearLabel(element, /短标题/, /商品标题/))
+      || null;
+
+    const rest = fields.filter(element => element !== short);
+    let product = rest.find(element => /商品标题/.test(hints(element)))
+      || rest.find(element => nearLabel(element, /商品标题/, /短标题/))
+      || null;
+
+    if (!product) {
+      // 兜底：整页最靠上的长文本框（商品标题上限 60，短标题只有 24）
+      const long = rest.filter(element => Number(element.maxLength) > SHORT_TITLE_LIMIT);
+      const typical = long.filter(element => {
+        const max = Number(element.maxLength);
+        return max >= 40 && max <= 80;
+      });
+      product = topMost(typical.length ? typical : (long.length ? long : rest));
+    }
+
+    let shortField = short;
+    if (!shortField && product) {
+      // 短标题框没认出来时，先找 maxlength 正好 24 的，再放宽到 40 以内；
+      // 认不出就跳过（不阻断整条）
+      const pool = fields.filter(element => element !== product);
+      const exact = pool.filter(element => Number(element.maxLength) === SHORT_TITLE_LIMIT);
+      shortField = topMost(exact.length ? exact : pool.filter(element => {
+        const max = Number(element.maxLength);
+        return max > 0 && max <= 40;
+      }));
+    }
+
+    // 最后交叉校验一次：商品标题的上限一定比短标题大
+    if (product && shortField) {
+      const a = Number(product.maxLength);
+      const b = Number(shortField.maxLength);
+      if (a > 0 && b > 0 && a < b) {
+        const swap = product;
+        product = shortField;
+        shortField = swap;
       }
     }
 
-    // 最后兜底：整页最靠上的、带 maxlength 的长文本框
-    return fields
-      .filter(element => Number(element.maxLength) > 0 && Number(element.maxLength) <= 200)
-      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0] || null;
+    return { product, short: shortField };
   }
 
-  async function fillPublishTitle(title) {
-    const value = String(title || '').trim();
-    if (!value) throw new Error('这一条没有标题');
-
-    const field = await waitFor(findTitleField, 30000, 500);
-    if (!field) throw new Error('发布页没找到「商品标题」输入框');
-
+  /** 往一个标题框写值：受控组件吞掉赋值时改走插入文本，写完必须核对 */
+  async function writeTitleField(field, value, label, options = {}) {
+    let target = String(value ?? '');
     const max = Number(field.maxLength);
-    if (max > 0 && value.length > max) {
-      throw new Error(`标题 ${value.length} 字，超过输入框上限 ${max} 字，已停止这一条`);
+    if (max > 0 && charLength(target) > max) {
+      if (!options.clip) {
+        throw new Error(`${label} ${charLength(target)} 字，超过输入框上限 ${max} 字，已停止这一条`);
+      }
+      target = Array.from(target).slice(0, max).join('');
     }
 
     field.focus();
     if (typeof field.select === 'function') field.select();
-    setNativeValue(field, value);
+    setNativeValue(field, target);
     await sleep(200);
 
     let actual = String(field.value || '').trim();
-    if (actual !== value) {
+    if (actual !== target) {
       // 受控组件偶尔吞掉一次性赋值，改走「插入文本」路径
       try {
         if (typeof field.select === 'function') field.select();
-        document.execCommand('insertText', false, value);
+        document.execCommand('insertText', false, target);
       } catch {
         /* 忽略 */
       }
@@ -1070,10 +1146,43 @@
       actual = String(field.value || '').trim();
     }
 
-    if (actual !== value) {
-      throw new Error(`标题没写进去：期望 ${value.length} 字，实际 ${actual.length} 字`);
+    if (actual !== target) {
+      // 平台按自己的宽度规则截断时，实际值会是目标值的前缀（短标题常见），
+      // 这种情况不算失败，按平台收下的值继续
+      if (options.lenient && actual && target.startsWith(actual)) {
+        logStep(`${label}被平台截到 ${charLength(actual)} 字，按实际值继续`);
+        return actual;
+      }
+      throw new Error(`${label}没写进去：期望 ${charLength(target)} 字，实际 ${charLength(actual)} 字`);
     }
-    logStep(`标题已填入（${actual.length} 字）`);
+    return actual;
+  }
+
+  async function fillPublishTitle(title) {
+    const value = String(title || '').trim();
+    if (!value) throw new Error('这一条没有标题');
+
+    const fields = await waitFor(() => {
+      const found = titleFields();
+      return found && found.product ? found : null;
+    }, 30000, 500);
+    if (!fields || !fields.product) throw new Error('发布页没找到「商品标题」输入框');
+
+    const actual = await writeTitleField(fields.product, value, '商品标题');
+    logStep(`商品标题已填入（${charLength(actual)} 字）`);
+
+    const shortValue = shortTitleOf(value);
+    // 短标题框偶尔比商品标题晚半拍渲染，给它一点时间再判定「这一页没有」
+    const shortField = fields.short || await waitFor(() => titleFields().short, 1500, 250);
+    // 万一两个名字都指向同一个框，宁可少填也不能把短标题盖到商品标题上
+    if (!shortField || shortField === fields.product) {
+      logStep('这一页没找到独立的「导购短标题」输入框，跳过');
+      return actual;
+    }
+    if (!shortValue) return actual;
+    // 短标题是派生值，平台若只允许 23 字就直接截，不算失败
+    const shortActual = await writeTitleField(shortField, shortValue, '导购短标题', { clip: true, lenient: true });
+    logStep(`导购短标题已填入（${charLength(shortActual)} 字）：${shortActual}`);
     return actual;
   }
 
@@ -1210,7 +1319,7 @@
     return String(name || '').replace(/\.(jpe?g|png|webp|gif|bmp)$/i, '');
   }
 
-  /** 卡片名与目标名是否算同一张（全名相等 / 卡片名包含目标 / 去扩展名后包含） */
+  /** 卡片名与目标名是否算同一张：抠出文件名后**全等**比较（不用包含，避免 1.jpg 命中 11.jpg） */
   function nameMatches(cardText, imageName) {
     const text = norm(cardText).toLowerCase();
     const full = norm(imageName).toLowerCase();
@@ -1262,7 +1371,8 @@
    * 只换第一张：悬停菜单挂在第一张图上，选完素材库点确定，平台自己替换那一格。
    */
   async function replaceMainImageViaLibrary(imageName) {
-    const before = mainImageList()[0];
+    // 发布页刚打开时主图区可能还没渲染完，等第一张出现再动手（只填模式没有后续的发布等待兜底）
+    const before = await waitFor(() => mainImageList()[0], 20000, 500);
     if (!before) {
       throw new Error('发布页没找到主图第一张（没认出主图区块，或图片还没加载完）');
     }
@@ -1353,16 +1463,16 @@
     logStep('主图第一张已更新');
   }
 
-  /** 变体模式在发布页的前置动作；不在变体任务里时直接返回 null */
+  /** 裂变链接在发布页的前置动作；不在变体任务里时直接返回 null */
   async function applyVariant() {
     const pending = await readVariantPending();
     if (!pending || !pending.title) {
-      throw new Error('变体数据没读到（列表页没写进 storage），已停止这一条，避免发出没改标题的商品');
+      throw new Error('这一条的标题没读到（列表页没写进 storage），已停止，避免发出没改标题的商品');
     }
     const no = Number(pending.index) + 1;
-    report(`变体第 ${no} 条：填写标题…`);
+    report(`第 ${no} 条：填写标题…`);
     await fillPublishTitle(pending.title);
-    report(`变体第 ${no} 条：替换主图「${pending.image}」…`);
+    report(`第 ${no} 条：替换主图「${pending.image}」…`);
     await replaceMainImageViaLibrary(pending.image);
     return pending;
   }
@@ -1564,12 +1674,14 @@
   // runId 用来让侧边栏把多次「发布相似品」区分成不同任务记录，不参与执行逻辑
   const runtime = {
     running: false,
-    // 'ids' = 每个 ID 各搜一次（批量发布相似品）；'variant' = 同一个 ID 连点多次（批量复制变体）
+    // 'ids' = 每个 ID 各搜一次（旧链上新）；'variant' = 同一个 ID 连点多次（裂变链接）
     mode: 'ids',
     ids: [],
     variants: [],
     index: 0,
     results: [],
+    // 裂变链接的开关：false = 只填标题、换主图，不点发布（测试阶段用）
+    publish: true,
     pendingSignal: null,
     earlySignal: null,
     runId: 0,
@@ -1602,6 +1714,8 @@
             running: runtime.running,
             runId: runtime.runId,
             sourceId: runtime.ids[0] || '',
+            // false = 只填标题与主图，不点发布（测试阶段）
+            publish: runtime.publish !== false,
             items: runtime.variants,
             index: runtime.index,
             results: runtime.results,
@@ -1639,6 +1753,8 @@
             index,
             title: item.title || '',
             image: item.image || '',
+            // 测试阶段只填不发：发布页据此决定填完就回报，而不是点「发布商品」
+            publish: runtime.publish !== false,
             at: Date.now()
           }
         }, () => resolve());
@@ -1648,11 +1764,12 @@
     });
   }
 
-  async function runVariants(sourceId, items) {
+  async function runVariants(sourceId, items, options = {}) {
     if (runtime.running) return { ok: false, error: '已经在运行中' };
 
     runtime.mode = 'variant';
     runtime.running = true;
+    runtime.publish = options.publish !== false;
     runtime.ids = [String(sourceId)];
     runtime.variants = (Array.isArray(items) ? items : [])
       .map((item, index) => ({
@@ -1720,11 +1837,11 @@
           // 正常流程里整批只搜一次，走不到这里。
           try {
             logStep('源商品那一行已不在页面上，重新搜索一次');
-            row = await searchSource(String(sourceId), `变体 ${index + 1}/${total}：`);
+            row = await searchSource(String(sourceId), `第 ${index + 1}/${total} 条：`);
           } catch (error) {
             const reason = `列表里找不到源商品那一行了（${error.message}）`;
             fail(reason);
-            report(`变体 ${index + 1}/${total}：${reason}`, { index, total });
+            report(`第 ${index + 1}/${total} 条：${reason}`, { index, total });
             consecutiveFailures += 1;
             if (consecutiveFailures >= 3) {
               runtime.error = reason;
@@ -1738,10 +1855,10 @@
         await writeVariantPending(index);
 
         try {
-          await openSimilarOnRow(row, `变体 ${index + 1}/${total}：`);
+          await openSimilarOnRow(row, `第 ${index + 1}/${total} 条：`);
         } catch (error) {
           fail(error.message);
-          report(`变体 ${index + 1}/${total}：${error.message}，跳过`, { index, total });
+          report(`第 ${index + 1}/${total} 条：${error.message}，跳过`, { index, total });
           consecutiveFailures += 1;
           if (consecutiveFailures >= 3) {
             runtime.error = `连续 ${consecutiveFailures} 条失败：${error.message}`;
@@ -1751,12 +1868,15 @@
           continue;
         }
 
-        report(`变体 ${index + 1}/${total}：等待发布页填标题、换主图并提交…`, { index, total });
+        report(
+          `第 ${index + 1}/${total} 条：等待发布页${runtime.publish ? '填标题、换主图并提交' : '填标题、换主图'}…`,
+          { index, total }
+        );
         const signal = await waitSignal();
         if (signal.stopped) break;
         if (signal.timeout) {
           fail('等待发布页超时（发布页可能卡在加载或替换主图）');
-          report(`变体 ${index + 1}/${total}：等待发布页超时，跳过`, { index, total });
+          report(`第 ${index + 1}/${total} 条：等待发布页超时，跳过`, { index, total });
           consecutiveFailures += 1;
           if (consecutiveFailures >= 3) {
             runtime.error = '连续 3 条等待发布页超时';
@@ -1771,22 +1891,27 @@
             title: item.title,
             image: item.image,
             ok: true,
+            // 只填模式下页面没有提交，结果里如实标注，复制出去能一眼区分
+            filled: Boolean(signal.filled) || !runtime.publish,
             reason: '',
             issues: [],
             at: Date.now()
           });
           consecutiveFailures = 0;
           persist();
-          report(`变体 ${index + 1}/${total}：已发布`, { index, total });
+          report(
+            `第 ${index + 1}/${total} 条：${runtime.publish ? '已发布' : '已填好（未发布）'}`,
+            { index, total }
+          );
           await sleep(1500);
           continue;
         }
 
         fail(signal.reason, signal.issues);
         consecutiveFailures += 1;
-        report(`变体 ${index + 1}/${total} 失败：${signal.reason || '原因未知'}`, { index, total });
+        report(`第 ${index + 1}/${total} 条失败：${signal.reason || '原因未知'}`, { index, total });
         if (consecutiveFailures >= 3) {
-          runtime.error = `连续 ${consecutiveFailures} 条发布失败：${signal.reason || '原因未知'}`;
+          runtime.error = `连续 ${consecutiveFailures} 条失败：${signal.reason || '原因未知'}`;
           break;
         }
         await sleep(1200);
@@ -1794,14 +1919,16 @@
     } catch (error) {
       // 搜源商品就失败：整批一条都跑不了，单独记错误，不伪造逐条结果
       runtime.error = error.message;
-      logStep(`变体整批中止：${error.message}`);
+      logStep(`整批中止：${error.message}`);
     }
 
     runtime.running = false;
     const success = runtime.results.filter(item => item.ok).length;
     report(
-      `变体已结束：成功 ${success} / 共 ${total} 条${runtime.results.length > success ? `，失败 ${runtime.results.length - success}` : ''}`
-        + (runtime.error ? `（${runtime.error}）` : ''),
+      `${runtime.publish ? '已结束' : '填写已结束'}：成功 ${success} / 共 ${total} 条`
+        + (runtime.results.length > success ? `，失败 ${runtime.results.length - success}` : '')
+        + (runtime.error ? `（${runtime.error}）` : '')
+        + (runtime.publish ? '' : '。本版未点发布，页面已保留，核对后手动关闭。'),
       { done: true, ok: success, total }
     );
     persist();
@@ -1905,10 +2032,31 @@
     }
     if (message.type === 'SIMILAR_PUBLISH') {
       // 先切模式：applyVariant / publishNow 里的 report 与 logStep 都按它分流，
-      // 不切的话发布页的进度和日志会写到「批量发布相似品」那边，变体面板里一片空白
+      // 不切的话发布页的进度和日志会写到「旧链上新」那边，裂变链接面板里一片空白
       if (message.variant) runtime.mode = 'variant';
       (message.variant ? applyVariant() : Promise.resolve(null))
-        .then(() => publishNow())
+        .then(pending => {
+          // 只填不发（裂变链接测试阶段）：填完标题与主图就回报成功，
+          // 不点「发布商品」、也不关标签页，留给人工核对
+          if (pending && pending.publish === false) {
+            const no = Number(pending.index) + 1;
+            report(`第 ${no} 条：标题与主图已填好，本版不点发布，请人工核对这个页面`);
+            logStep(`第 ${no} 条：已填好标题与主图，未点发布（只填模式）`);
+            try {
+              chrome.runtime.sendMessage({
+                type: 'SIMILAR_PUBLISH_DONE',
+                ok: true,
+                filled: true,
+                keepTab: true,
+                variant: true
+              });
+            } catch {
+              /* 忽略 */
+            }
+            return { ok: true, filled: true };
+          }
+          return publishNow();
+        })
         .then(result => reply(result))
         .catch(error => {
           // 失败也要回报，否则后台一直等，整条流程会卡住；把校验提示一起带回去
@@ -1918,7 +2066,7 @@
               ok: false,
               reason: error.message,
               issues: Array.isArray(error.issues) ? error.issues : [],
-              // 变体一次会开十几二十个发布页，失败页不能全留着
+              // 裂变链接一次会开十几二十个发布页，失败页不能全留着
               variant: runtime.mode === 'variant'
             });
           } catch {
@@ -1929,7 +2077,7 @@
       return true;
     }
     if (message.type === 'VARIANT_RUN') {
-      runVariants(message.sourceId, message.items);
+      runVariants(message.sourceId, message.items, { publish: message.publish !== false });
       reply({ ok: true, started: true });
       return;
     }
@@ -1950,6 +2098,7 @@
     if (message.type === 'SIMILAR_NEXT') {
       const payload = {
         ok: Boolean(message.ok),
+        filled: Boolean(message.filled),
         reason: message.reason || '',
         issues: Array.isArray(message.issues) ? message.issues : []
       };

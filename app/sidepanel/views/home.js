@@ -131,6 +131,6 @@ export async function render(ctx) {
           h('span', { class: 'badge', text: STATUS_TEXT[task.status] || task.status }),
         ]);
       }))
-      : emptyState('inbox', '还没有任务记录', '跑一次批量填充 SKU 或批量发布相似品，这里就会出现记录'),
+      : emptyState('inbox', '还没有任务记录', '跑一次批量填充 SKU 或旧链上新，这里就会出现记录'),
   ]);
 }

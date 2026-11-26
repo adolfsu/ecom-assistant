@@ -93,7 +93,9 @@ async function triggerPublish(tabId, attempt = 0) {
     const pending = data[PENDING_KEY] || {};
     const result = await sendToTab(tabId, { type: 'SIMILAR_PUBLISH', variant: Boolean(pending.variant) });
     if (result && result.ok) {
-      log(`标签 ${tabId} 已开始点击「发布商品」`);
+      log(result.filled
+        ? `标签 ${tabId} 已填好两个标题与主图（本版不发布）`
+        : `标签 ${tabId} 已开始点击「发布商品」`);
       return;
     }
     // 页面自己会回报失败原因，这里不重复触发
@@ -228,22 +230,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.type === 'SIMILAR_PUBLISH_DONE') {
     const publishTabId = senderTabId;
     chrome.storage.local.remove(PENDING_KEY).catch(() => {});
-    log(`发布页回报：${message.ok ? '成功' : `失败（${message.reason || '无原因'}）`}`);
+    log(`发布页回报：${message.ok ? (message.filled ? '已填好（未发布）' : '成功') : `失败（${message.reason || '无原因'}）`}`);
     (async () => {
       const data = await chrome.storage.local.get([LIST_TAB_KEY]);
       const listTabId = data[LIST_TAB_KEY];
       // 成功才关闭发布页；失败保留页面，方便人工看校验提示。
-      // 变体模式例外：一次会开十几二十个，失败页全留着反而看不到重点，
+      // 裂变链接一次会开十几二十个，失败页全留着反而看不到重点，
       // 失败原因已经随结果回传，所以变体模式下成败都关。
-      if (publishTabId && (message.ok || message.variant) && publishTabId !== listTabId) {
+      // 只填不发（keepTab）时不关：用户要自己核对标题和主图。
+      if (publishTabId && !message.keepTab && (message.ok || message.variant) && publishTabId !== listTabId) {
         await chrome.tabs.remove(publishTabId).catch(() => {});
       }
       if (!listTabId) {
         reply({ ok: false, error: '列表页标签已关闭' });
         return;
       }
+      if (message.keepTab) {
+        // 只填模式：发布页留在那里，把列表页切回前台，
+        // 否则列表页一直在后台，定时器被节流、平台的 window.open 也更容易被拦
+        await chrome.tabs.update(listTabId, { active: true }).catch(() => {});
+      }
       const forwarded = await notifyList({
         ok: Boolean(message.ok),
+        filled: Boolean(message.filled),
         reason: message.reason || '',
         issues: Array.isArray(message.issues) ? message.issues : []
       });

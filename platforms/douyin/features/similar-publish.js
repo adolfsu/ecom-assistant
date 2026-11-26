@@ -1,5 +1,6 @@
-/* 抖店 · 批量发布相似品
+/* 抖店 · 旧链上新
  * 2.0 阶段一：三步向导已在侧边栏实现（app/sidepanel/views/feature-similar-publish.js）。
+ * 功能名沿用平台动作「发布相似品」的内部叫法，侧边栏展示名叫「旧链上新」。
  * 队列仍跑在列表页脚本里（similar.js），进度/结果经 storage 回传，
  * 所以关闭侧边栏不会中断任务——这也是能力声明里能给出 STATUS 的原因。
  */
@@ -8,11 +9,11 @@ import { registerFeature, CAP } from '../../../core/feature-registry.js';
 
 export default registerFeature({
   featureId: 'douyin.similar-publish',
-  name: '批量发布相似品',
+  name: '旧链上新',
   platformId: 'douyin',
   category: 'publish',
   categoryLabel: '发布',
-  description: '按商品 ID 逐条搜索 → 发布相似品 → 确认 → 新标签页自动发布，失败原因可一键复制。',
+  description: '按商品 ID 逐条搜索 → 发布相似品 → 确认 → 新标签页自动发布，失败原因可一键复制。一个旧链接批量铺新链接。',
   icon: 'copy',
   status: 'available',
   legacyPanel: true,

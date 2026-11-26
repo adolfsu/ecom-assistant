@@ -1,10 +1,13 @@
 /*
- * 批量复制变体（抖店）—— 2.0 侧边栏版四步向导。
+ * 裂变链接（抖店）—— 2.0 侧边栏版四步向导。
  *
  * 场景：同一个源商品，连续复制 N 个相似品，每条换一个标题和一张主图。
- * 与「批量发布相似品」的差别是：
+ * 与「旧链上新」的差别是：
  *   - 源商品只搜索一次（搜索串位的风险只出现一次，单条也更快）；
  *   - 每条的数据不是商品 ID，而是「标题 + 素材库图片名」。
+ *
+ * 2.1.1 起只做到「填商品标题 + 导购短标题 + 换主图」：PUBLISH_ENABLED = false 时不点发布，
+ * 页面留着给人核对；等这一段跑稳再把开关打开，复用已经跑通的发布、关页流程。
  *
  * 执行体仍在 similar.js（VARIANT_RUN），进度和结果写 storage，所以关掉面板不影响队列。
  */
@@ -15,6 +18,7 @@ import { KEYS, read, writeMany, readMany, onChange } from '../../shared/storage.
 import { parseIds } from '../../shared/ids.js';
 import { columnValues } from '../../shared/sku.js';
 import { parseTitles, pickImageNames, buildVariants } from '../../shared/images.js';
+import { shortTitleOf } from '../../shared/titles.js';
 import { copyWithFeedback } from '../../shared/clipboard.js';
 import { variantFailure, variantRunText } from '../../shared/run-format.js';
 import { recordRun, runStatus } from '../../shared/tasks.js';
@@ -25,6 +29,13 @@ import { stepper, wizardFoot, setStatus, statusLine, kvRow, inlineEmpty, section
 
 const STEP_TITLES = ['源商品', '变体列表', '任务确认', '执行与结果'];
 const PREVIEW_LIMIT = 12;
+
+/**
+ * 是否点「发布商品」。
+ * 先只做填写：填完标题和主图就回报，页面保留，人工核对。
+ * 验证没问题后改成 true，发布与关页走 similar.js 里已经跑通的 publishNow()。
+ */
+const PUBLISH_ENABLED = false;
 
 let cache = null;
 let repaint = null;
@@ -136,7 +147,7 @@ export async function render(ctx, feature) {
     recordRun({
       featureId: 'douyin.copy-variants',
       platformId: 'douyin',
-      name: '批量复制变体',
+      name: '裂变链接',
       signature: `variant:${run.runId}`,
       status: run.error && !results.length
         ? 'failed'
@@ -347,17 +358,19 @@ export async function render(ctx, feature) {
         ]));
       }
 
-      const table = h('table', { class: 'preview-table' }, [
+      const table = h('table', { class: 'preview-table preview-variants' }, [
         h('thead', {}, [
           h('tr', {}, [
             h('th', { text: '#' }),
-            h('th', { text: '标题' }),
+            h('th', { text: '商品标题' }),
+            h('th', { text: '导购短标题' }),
             h('th', { text: '素材库图片名' }),
           ]),
         ]),
         h('tbody', {}, built.items.slice(0, PREVIEW_LIMIT).map(item => h('tr', {}, [
           h('td', { class: 'mono', text: String(item.no) }),
           h('td', { title: item.title, text: item.title }),
+          h('td', { title: shortTitleOf(item.title), text: shortTitleOf(item.title) }),
           h('td', { class: 'mono', title: item.image, text: item.image }),
         ]))),
       ]);
@@ -409,6 +422,8 @@ export async function render(ctx, feature) {
         sectionTitle('标题', '一行一条。粘贴表格整列，或从已导入的表格里选一列。'),
         area,
         h('div', { style: 'margin-top:8px' }, [titleLine]),
+        h('div', { class: 'setting-desc', style: 'margin-top:8px' },
+          '每条会同时填两个标题：商品标题写整条；导购短标题取前 24 个字符，标题里含英文或数字时取前 23 个。'),
         h('div', { class: 'form-row', style: 'margin-top:10px' }, [
           h('label', { class: 'form-label', text: '从表格读取' }),
           columnSelect,
@@ -449,13 +464,14 @@ export async function render(ctx, feature) {
       class: 'btn btn-primary',
       disabled: state.starting || !built.used || !id,
       onclick: () => startRun(),
-    }, ['开始复制', h('span', { html: icon('play') })]);
+    }, [PUBLISH_ENABLED ? '开始并发布' : '开始填写', h('span', { html: icon('play') })]);
 
     return h('div', {}, [
       h('div', { class: 'card' }, [
         kvRow('源商品 ID', id || '（未填写）'),
         kvRow('变体条数', `${built.used} 条`),
         kvRow('标题 / 图片', `${built.titleCount} / ${built.imageCount}`),
+        kvRow('本次动作', PUBLISH_ENABLED ? '填商品标题 + 短标题 + 换主图 + 发布' : '填商品标题 + 短标题 + 换主图，不点发布'),
         built.unusedTitles.length || built.unusedImages.length
           ? kvRow('不执行', [
             built.unusedTitles.length ? `${built.unusedTitles.length} 条标题` : '',
@@ -486,9 +502,13 @@ export async function render(ctx, feature) {
       h('div', { class: 'notice', style: 'margin-top:12px' }, [
         h('span', { html: icon('info') }),
         h('div', {}, [
-          h('div', { text: `开始后会连续打开 ${built.used} 个发布页，每条填标题、换主图后自动发布。` }),
+          PUBLISH_ENABLED
+            ? h('div', { text: `开始后会连续打开 ${built.used} 个发布页，每条填两个标题、换主图后自动发布。` })
+            : h('div', { text: `开始后会连续打开 ${built.used} 个发布页，每条填好商品标题、导购短标题和主图，然后停在那里不发布。` }),
           h('div', { style: 'margin-top:2px;opacity:.85' },
-            '可以关掉这个面板，队列在列表页继续跑。期间不要操作列表页，也不要手动关闭新开的标签页。'),
+            PUBLISH_ENABLED
+              ? '可以关掉这个面板，队列在列表页继续跑。期间不要操作列表页，也不要手动关闭新开的标签页。'
+              : '填完的页面会保留，方便你逐条核对标题和主图；核对完手动关闭即可。第一次验证建议先只留 3 条标题试跑。'),
         ]),
       ]),
 
@@ -530,6 +550,7 @@ export async function render(ctx, feature) {
       const result = await toTab(tab.id, {
         type: MSG.VARIANT_RUN,
         sourceId: id,
+        publish: PUBLISH_ENABLED,
         items: built.items.map(item => ({ no: item.no, title: item.title, image: item.image })),
       }, 20000);
       if (result && result.error) throw new Error(result.error);
@@ -540,13 +561,16 @@ export async function render(ctx, feature) {
         running: true,
         runId: Date.now(),
         sourceId: id,
+        publish: PUBLISH_ENABLED,
         items: built.items,
         index: 0,
         results: [],
         at: Date.now(),
       };
       state.status = {
-        text: `已开始，共 ${built.used} 条。可以关掉面板，流程会在列表页继续。`,
+        text: PUBLISH_ENABLED
+          ? `已开始，共 ${built.used} 条。可以关掉面板，流程会在列表页继续。`
+          : `已开始，共 ${built.used} 条。每条填完标题和主图就停下，不会发布。`,
         tone: 'ok',
       };
       state.step = 3;
@@ -577,6 +601,9 @@ export async function render(ctx, feature) {
     const success = results.filter(item => item.ok).length;
     const total = items.length;
     const percent = total ? Math.round(results.length / total * 100) : 0;
+    // 只填模式：成功 = 已填好，没有提交
+    const filledOnly = run.publish === false;
+    const doneLabel = filledOnly ? '已填好' : '已发布';
     const info = {
       running: Boolean(run.running),
       total,
@@ -589,7 +616,7 @@ export async function render(ctx, feature) {
     state.runningCount = info.running ? 1 : 0;
 
     const status = statusLine(
-      state.status ? state.status.text : (info.running ? '执行中…' : ''),
+      state.status ? state.status.text : (info.running ? (filledOnly ? '填写中…' : '执行中…') : ''),
       state.status ? state.status.tone : ''
     );
     const bar = h('div', { class: 'progress-bar' });
@@ -601,7 +628,7 @@ export async function render(ctx, feature) {
     logBox.hidden = !state.logOpen;
     logBox.textContent = state.debug.length
       ? state.debug.slice(-40).join('\n')
-      : '还没有运行日志。跑一次后这里会记录：搜索源商品 / 打开发布页 / 填标题 / 换主图 / 发布结果。';
+      : `还没有运行日志。跑一次后这里会记录：搜索源商品 / 打开发布页 / 填商品标题 / 填导购短标题 / 换主图${filledOnly ? '' : ' / 发布结果'}。`;
 
     const hasResults = results.length > 0;
 
@@ -611,7 +638,7 @@ export async function render(ctx, feature) {
           h('div', { class: 'row' }, [
             h('span', { class: `dot ${info.running ? 'dot-warn' : (total && info.done >= total ? 'dot-success' : '')}`.trim() }),
             h('div', {}, [
-              h('div', { class: 'list-item-title', text: info.running ? '执行中' : (total ? '已结束' : '尚未开始') }),
+              h('div', { class: 'list-item-title', text: info.running ? (filledOnly ? '填写中' : '执行中') : (total ? (filledOnly ? '已填完' : '已结束') : '尚未开始') }),
               h('div', { class: 'list-item-sub', text: total ? `${info.done} / ${total} 条已返回结果` : '等待开始' }),
             ]),
           ]),
@@ -625,6 +652,16 @@ export async function render(ctx, feature) {
           ? h('div', { class: 'progress-text', text: info.text })
           : h('div', { class: 'progress-text muted', text: '进度提示会显示在这里。' }),
       ]),
+
+      filledOnly
+        ? h('div', { class: 'notice', style: 'margin-top:12px' }, [
+          h('span', { html: icon('info') }),
+          h('div', {}, [
+            h('div', { text: '这一版只填不发布：每条填好两个标题和主图后停在那一步，页面保留。' }),
+            h('div', { style: 'margin-top:2px;opacity:.85', text: '逐条核对无误后手动点发布（或关掉页面）。等这一段验证稳了再打开自动发布。' }),
+          ]),
+        ])
+        : null,
 
       run.error
         ? h('div', { style: 'margin-top:12px' }, [
@@ -647,7 +684,7 @@ export async function render(ctx, feature) {
             h('span', { class: 'setting-desc', text: run.at ? new Date(run.at).toLocaleString('zh-CN') : '' }),
           ]),
           h('div', { class: 'result-summary', style: 'margin-top:8px' }, [
-            h('span', { class: 'pass', text: `成功 ${info.success}` }),
+            h('span', { class: 'pass', text: `${filledOnly ? '已填好' : '成功'} ${info.success}` }),
             h('span', { class: 'muted', text: ' · ' }),
             h('span', { class: 'fail', text: `失败 ${info.failed}` }),
             h('span', { class: 'muted', text: ` · 共 ${total || results.length} 条` }),
@@ -672,6 +709,7 @@ export async function render(ctx, feature) {
                 h('span', { class: 'truncate', text: item.title || '（无标题）' }),
               ]),
               h('div', { class: 'result-sub mono', text: item.image || '未配图' }),
+              item.ok && item.filled ? h('div', { class: 'result-sub', text: '已填好，未发布' }) : null,
               item.ok ? null : h('div', { class: 'result-sub', text: variantFailure(item) }),
             ]),
           ]))),
@@ -698,7 +736,7 @@ export async function render(ctx, feature) {
           class: 'btn',
           disabled: info.running,
           onclick: () => { state.step = 1; draw(); },
-          text: '修改变体',
+          text: '修改列表',
         }),
         info.running
           ? h('button', { class: 'btn', onclick: () => stopRun() }, ['停止任务', h('span', { html: icon('square') })])

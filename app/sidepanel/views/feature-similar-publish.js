@@ -1,5 +1,5 @@
 /*
- * 批量发布相似品（抖店）—— 2.0 侧边栏版三步向导。
+ * 旧链上新（抖店）—— 2.0 侧边栏版三步向导。
  *
  * 这个功能的执行体在列表页（similar.js 的队列），进度与结果都写在 storage 里，
  * 所以侧边栏只做三件事：收集 ID、校验页面、读结果显示。
@@ -125,7 +125,7 @@ export async function render(ctx, feature) {
     recordRun({
       featureId: 'douyin.similar-publish',
       platformId: 'douyin',
-      name: '批量发布相似品',
+      name: '旧链上新',
       signature: `similar:${run.runId}`,
       status: runStatus({
         running: Boolean(run.running),

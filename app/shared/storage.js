@@ -20,14 +20,14 @@ export const KEYS = {
   skuState: 'doudianBatchState',
   skuRun: 'skuFillRun',
 
-  // 批量发布相似品：键名由 similar.js / background.js 写入，这里只读
+  // 旧链上新：键名由 similar.js / background.js 写入，这里只读
   similarIds: 'similarIds',
   similarRun: 'similarRun',
   similarProgress: 'similarProgress',
   similarDebug: 'similarDebug',
   similarListTabId: 'similarListTabId',
 
-  // 批量复制变体：源商品、标题与图片名由侧边栏写，运行快照由 similar.js 写
+  // 裂变链接：源商品、标题与图片名由侧边栏写，运行快照由 similar.js 写
   variantSource: 'variantSource',
   variantTitles: 'variantTitles',
   variantImages: 'variantNames',

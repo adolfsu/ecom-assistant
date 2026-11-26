@@ -746,6 +746,27 @@ body {
   border-bottom: 0;
 }
 
+/* 裂变链接的配对表是 4 列，侧边栏很窄：序号固定窄、标题优先，短标题与图片名按需省略 */
+.preview-table.preview-variants th:nth-child(1),
+.preview-table.preview-variants td:nth-child(1) {
+  width: 28px;
+}
+
+.preview-table.preview-variants th:nth-child(2),
+.preview-table.preview-variants td:nth-child(2) {
+  max-width: 150px;
+}
+
+.preview-table.preview-variants th:nth-child(3),
+.preview-table.preview-variants td:nth-child(3) {
+  max-width: 110px;
+}
+
+.preview-table.preview-variants th:nth-child(4),
+.preview-table.preview-variants td:nth-child(4) {
+  max-width: 92px;
+}
+
 .preview-line {
   color: var(--c-text);
   font-size: 11px;
