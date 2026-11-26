@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.9';
+  const VERSION = '0.9.10';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -2147,6 +2147,62 @@
     return nodes.length ? norm(nodes[0].textContent) : '';
   }
 
+  /**
+   * 平台的「稍等一下」文案：类目识别中、加载中、处理中……
+   * 这类提示**不是失败**，是平台还没准备好，等它跑完再点一次就好。
+   * 必须和失败分开：点快了（标题刚填完、图片刚换完）几乎每条都会先撞上一次。
+   */
+  const BUSY_PATTERN = /(类目识别|识别类目|识别中|加载中|处理中|校验中|检测中|审核中|请稍候|请稍等|请等待|请完成后再|稍后再试)/;
+
+  /** 文案里带这些词的，不管像不像「等一下」，都按真失败报 */
+  const BUSY_FAIL_WORDS = /(失败|错误|异常|不能为空|请填写|请选择|请完善|必填|未通过)/;
+
+  function isBusyNote(text) {
+    const value = norm(text);
+    if (!value) return false;
+    // 「网络异常，请稍后再试」同时命中两边：有明确失败词就算失败，别拿重试掩盖
+    if (BUSY_FAIL_WORDS.test(value)) return false;
+    return BUSY_PATTERN.test(value);
+  }
+
+  /** 当前浮层里的「等一下」提示（类目识别中…），没有就返回空串 */
+  function findBusyToast() {
+    const nodes = allVisible('[class*="toast" i], [class*="message" i], [class*="notification" i], [class*="alert" i], [role="alert"]')
+      .filter(element => {
+        const text = norm(element.textContent);
+        if (!text || text.length > 90) return false;
+        return isBusyNote(text);
+      });
+    return nodes.length ? norm(nodes[0].textContent) : '';
+  }
+
+  /**
+   * 浮层找不到时按整页文案再认一遍。
+   * 只认完整短语（「类目识别中」「请完成后再发布」），不认单个「识别中」：
+   * 类目字段旁边可能常驻一个「识别中」，那是页面内容不是浮层，认了会一直以为没就绪。
+   */
+  function findBusyNote() {
+    const toast = findBusyToast();
+    if (toast) return toast;
+    const pageText = document.body.innerText || '';
+    const hit = pageText.match(/[^\n]{0,12}(?:类目识别中|识别类目中|类目校验中|请完成后再发布)[^\n]{0,12}/);
+    return hit ? norm(hit[0]) : '';
+  }
+
+  /**
+   * 点「发布商品」之前先等类目识别跑完。
+   * 识别没完成时点发布，平台只弹一句「商品类目识别中，请完成后再发布」，这一下不会提交。
+   * 这里只认浮层：常驻在字段旁的「识别中」等它没有意义，会白等 30 秒。
+   * 等不到也不硬等：照常去点，由 publishNow 的重试兜住。
+   */
+  async function waitCategoryReady() {
+    const note = findBusyToast();
+    if (!note) return;
+    report(`发布页：平台提示「${note.slice(0, 20)}」，等它完成…`);
+    logStep(`点击发布前平台还在${note.slice(0, 16)}，先等它跑完`);
+    await waitFor(() => (findBusyToast() ? null : 'clear'), 30000, 500);
+  }
+
   /** 看起来像「错误/校验」文案的句子 */
   const ISSUE_PATTERN = /(失败|错误|异常|不能为空|请填写|请选择|请完善|必填|未通过|不支持|超出|超限|违规|重复|已存在|无效|非法|请上传|必选)/;
 
@@ -2188,7 +2244,7 @@
 
   async function publishNow() {
     report('发布页：等待页面加载完成…');
-    const button = await waitFor(findPublishButton, 90000, 500);
+    let button = await waitFor(findPublishButton, 90000, 500);
     if (!button) throw new Error('发布页没有出现「发布商品」按钮，请确认新标签页已正常加载');
 
     // 等按钮从禁用/加载态恢复
@@ -2201,36 +2257,76 @@
     // 「发布商品」按钮出现不代表商品信息已加载完，等关键区块渲染后再点，避免提交空数据
     await waitFor(() => /商品信息质量|商品标题|基础信息|价格库存/.test(document.body.innerText || ''), 30000, 500);
     await sleep(1500);
+    // 类目识别是平台在后台单独跑的一件事，识别没完就点发布只会弹「请完成后再发布」
+    await waitCategoryReady();
 
-    report('发布页：点击「发布商品」…');
-    // 点击前先记下页面上已有的提示，之后只认「新出现」的那些，避免把原有的提醒当成失败原因
-    const baseline = collectIssues();
-    mouseClick(button);
-    await sleep(1400);
+    const deadline = Date.now() + 180000;
+    const MAX_TRIES = 4;
+    let outcome = null;
 
-    const confirm = findPublishConfirmDialog();
-    if (confirm) {
-      await clickDialogOk(confirm);
-      await sleep(1200);
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
+      // 类目识别结束后按钮常被重建，每次都要重新找一遍，不能抱着旧的节点
+      if (!button || !button.isConnected) button = await waitFor(findPublishButton, 20000, 500);
+      if (!button) throw new Error('「发布商品」按钮在加载过程中消失了');
+      if (button.disabled) {
+        await waitFor(() => (button.isConnected && !button.disabled ? 'ready' : null), 15000, 400);
+      }
+
+      report(attempt === 1 ? '发布页：点击「发布商品」…' : `发布页：第 ${attempt} 次点击「发布商品」…`);
+      // 点击前先记下页面上已有的提示，之后只认「新出现」的那些，避免把原有的提醒当成失败原因
+      const baseline = collectIssues();
+      const busyBefore = findBusyNote();
+      mouseClick(button);
+      await sleep(1400);
+
+      const confirm = findPublishConfirmDialog();
+      if (confirm) {
+        await clickDialogOk(confirm);
+        await sleep(1200);
+      }
+
+      const clickedAt = Date.now();
+      outcome = await waitFor(() => {
+        const text = document.body.innerText || '';
+        if (/商品提交成功|提交成功|继续发布商品视频/.test(text)) return { ok: true };
+        // 新冒出来的校验提示：立刻判失败，不必等满超时（「类目识别中」这种还算不上失败）
+        const fresh = diffIssues(baseline, collectIssues()).filter(item => !isBusyNote(item));
+        if (fresh.length) return { ok: false, reason: fresh[0], issues: fresh };
+        // 「商品类目识别中，请完成后再发布」：平台还没准备好，等它跑完再点一次
+        const busy = findBusyNote();
+        if (busy && busy !== busyBefore) return { retry: true, note: busy };
+        // 兜底：有些提示文案和点击前重叠，45 秒内出现浮层提示也判失败
+        if (Date.now() - clickedAt < 45000) {
+          const failure = findFailureToast();
+          if (failure && !isBusyNote(failure)) return { ok: false, reason: failure, issues: [failure] };
+        }
+        return null;
+      }, Math.max(20000, Math.min(60000, deadline - Date.now())), 800);
+
+      if (outcome && outcome.ok) break;
+      if (outcome && outcome.ok === false) break;
+      if (outcome && outcome.retry) {
+        report(`发布页：平台提示「${outcome.note.slice(0, 20)}」，等它完成后重试…`);
+        logStep(`点击发布被挡在路上：${outcome.note}；等提示消失再点（第 ${attempt} 次）`);
+        await waitFor(() => (findBusyNote() === outcome.note ? null : 'clear'), 25000, 400);
+        await sleep(1200);
+        button = null;
+        continue;
+      }
+      // 既没成功也没抓到提示：多半是这一下点击没被平台接住，还有时间就再点一次
+      if (Date.now() < deadline - 20000) {
+        logStep(`点击发布后没等到结果，再点一次（第 ${attempt} 次）`);
+        await sleep(1500);
+        continue;
+      }
+      break;
     }
 
-    const clickedAt = Date.now();
-    const outcome = await waitFor(() => {
-      const text = document.body.innerText || '';
-      if (/商品提交成功|提交成功|继续发布商品视频/.test(text)) return { ok: true };
-      // 新冒出来的校验提示：立刻判失败，不必等满 45 秒
-      const fresh = diffIssues(baseline, collectIssues());
-      if (fresh.length) return { ok: false, reason: fresh[0], issues: fresh };
-      // 兜底：有些提示文案和点击前重叠，45 秒内出现浮层提示也判失败
-      if (Date.now() - clickedAt < 45000) {
-        const failure = findFailureToast();
-        if (failure) return { ok: false, reason: failure, issues: [failure] };
-      }
-      return null;
-    }, 180000, 800);
-
-    if (!outcome) {
-      const error = new Error('点击发布后 3 分钟内没有出现「商品提交成功」');
+    if (!outcome || outcome.retry) {
+      const busy = findBusyNote();
+      const error = new Error(busy
+        ? `发布失败：平台一直在提示「${busy}」，已重试 ${MAX_TRIES} 次`
+        : '点击发布后 3 分钟内没有出现「商品提交成功」');
       error.issues = collectIssues().slice(0, 3);
       throw error;
     }
