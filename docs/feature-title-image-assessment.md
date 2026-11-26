@@ -303,3 +303,24 @@ const PUBLISH_ENABLED = false; // 验证稳了改成 true，复用已有 publish
 - 面板第 3 步把「本次动作」写清楚，第 4 步提示页面会保留、核对后手动关闭。
 
 要恢复自动发布：把 `PUBLISH_ENABLED` 改成 `true`，其余链路（`publishNow`、关页、结果回传）一行都不用动。
+
+## 十三、2.1.2：修「每条都在登记前失败」
+
+2.1.0 把 `searchAndOpenSimilar` 拆成 `searchSource()` + `openSimilarOnRow()` 时，
+`openSimilarOnRow` 只声明了 `(found, label)` 两个参数，函数体里 `SIMILAR_OPENED` 却还在用
+`id: String(id)`。
+
+- `id` 在该函数作用域里不存在 → 每一条都抛 `ReferenceError: id is not defined`；
+- 这行正好包在 `try { … } catch { registered = false }` 里，于是异常被吞掉，
+  统一变成「没能登记本条的发布任务（扩展后台可能刚被重载），请重新点一次「开始」」；
+- 因为是**点确认之前**就失败，弹窗会被点掉，所以一条都开不出发布页，连续 3 条失败后整批中止。
+
+`node --check` 只能查语法，查不出未定义标识符；原有测试也只断言了链路结构，所以没拦住。
+
+修复：
+
+- 签名改为 `openSimilarOnRow(found, label, id)`，登记时用 `String(id || '')`；
+- 两个调用点都补上 id：`searchAndOpenSimilar` 传自己的 `id`，`runVariants` 传 `sourceId`；
+- `tests/check-variants.js` 新增 3 条断言盯住参数个数与调用点，防同类问题再漏。
+
+版本 2.1.2 / 页面脚本 0.9.4。

@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.3';
+  const VERSION = '0.9.4';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -850,7 +850,7 @@
    * 在已定位的商品行上点「发布相似品」→ 确认 → 等新标签页被接管。
    * 拆出来是给变体模式复用：那里只搜一次源商品，之后每一轮都拿同一行去点。
    */
-  async function openSimilarOnRow(found, label) {
+  async function openSimilarOnRow(found, label, id) {
     if (found.fallback) report(`${label}页面上没有直接显示该 ID，按「共 1 件商品」的唯一结果继续…`);
     logStep(`结果定位方式：${found.fallback ? '共 1 件商品兜底' : 'ID 精确命中'}`);
 
@@ -901,7 +901,7 @@
     try {
       const ack = await chrome.runtime.sendMessage({
         type: 'SIMILAR_OPENED',
-        id: String(id),
+        id: String(id || ''),
         // 发布页要据此决定「填标题 + 换主图」：不能靠 storage 里有没有 variantPending，
         // 否则上一批变体留下的残值会污染下一批普通的发布相似品
         variant: runtime.mode === 'variant'
@@ -990,7 +990,7 @@
   async function searchAndOpenSimilar(id, index, total) {
     const label = `第 ${index + 1}/${total} 条：`;
     const found = await searchSource(id, label);
-    return openSimilarOnRow(found, label);
+    return openSimilarOnRow(found, label, id);
   }
 
   /* ---------------- 发布页：填标题 / 换主图（变体模式） ---------------- */
@@ -1855,7 +1855,7 @@
         await writeVariantPending(index);
 
         try {
-          await openSimilarOnRow(row, `第 ${index + 1}/${total} 条：`);
+          await openSimilarOnRow(row, `第 ${index + 1}/${total} 条：`, sourceId);
         } catch (error) {
           fail(error.message);
           report(`第 ${index + 1}/${total} 条：${error.message}，跳过`, { index, total });

@@ -273,3 +273,9 @@ platforms/
 - 裂变链接暂时只填不发：视图里 `PUBLISH_ENABLED = false` → `VARIANT_RUN.publish = false` →
   `variantPending.publish = false` → 发布页填完即回报 `filled + keepTab`，不点发布、不关页面。
   改回 `true` 即恢复原有发布流程。
+
+### 2.1.2 修复
+
+- `openSimilarOnRow` 拆分时漏了 `id` 参数，函数体里 `String(id)` 每条抛 ReferenceError，
+  被 catch 吞成「没能登记本条的发布任务」，旧链上新与裂变链接都无法启动。已补参数与两个调用点。
+- 测试加三条断言：函数签名带 id、每个调用点参数个数为 3、登记时对 id 做空值兜底。
