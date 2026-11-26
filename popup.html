@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>电商小助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<main>
+  <h1>电商小助手</h1>
+  <p class="sub">批量创建 SKU 并填写价格编码；也可按商品 ID 批量发布相似品。</p>
+  <button id="openPanel" class="ghost narrow" hidden>固定到侧边栏（切换标签页不关闭）</button>
+  <label class="file">选择商品 Excel 表<input id="file" type="file" accept=".xlsx"></label>
+  <div id="status" class="status">请选择 .xlsx 文件</div>
+  <section id="data" hidden>
+    <label>工作表 <select id="sheet"></select></label>
+    <label>表头行 <select id="header"></select></label>
+    <div class="fields">
+      <label>SKU 名称 <select id="skuName"></select></label>
+      <label>商品编码 <select id="code"></select></label>
+      <label>价格 <select id="price"></select></label>
+      <label>规格数值 <select id="specValue"></select></label>
+      <label>规格单位 <select id="specUnit"></select></label>
+      <label>数量 <select id="quantity"></select></label>
+      <label>数量量词 <select id="quantityUnit"></select></label>
+    </div>
+    <label class="switch"><input id="autoSplit" type="checkbox" checked> 名称已含规格时自动拆分（只拆最右一组）</label>
+    <div id="splitInfo" class="status"></div>
+    <div id="recordCount" class="status"></div>
+    <div id="preview" class="preview"></div>
+    <button id="batchFill" class="primary" disabled>批量创建并填写所有 SKU</button>
+  </section>
+  <button id="diagnose" class="ghost">检查页面规格框结构</button>
+  <pre id="diag" class="diag" hidden></pre>
+  <p class="note">先打开抖店商品规格编辑页，并点开一个空白 SKU 项的编辑框。工具会逐行创建 SKU 并填写对应信息，结束后请核对并自行保存。</p>
+
+  <hr class="divide">
+  <section id="similar">
+    <h2>发布相似品</h2>
+    <p class="sub">先切到抖店「商品列表」标签页。工具会逐条：搜索 ID → 发布相似品 → 确认 → 等新标签页加载后点「发布商品」→ 成功则关闭该标签页并继续下一条。</p>
+    <label>商品 ID（每行一个，也支持逗号或空格分隔）
+      <textarea id="similarIds" rows="4" spellcheck="false" placeholder="3600000000000000001&#10;3600000000000000002"></textarea>
+    </label>
+    <label>或从表格某列读取 <select id="similarColumn"><option value="">— 不读取 —</option></select></label>
+    <button id="similarStart" class="primary">开始批量发布相似品</button>
+    <button id="similarStop" class="ghost">停止</button>
+    <button id="similarDiag" class="ghost">检查列表页结构</button>
+    <pre id="similarDiagBox" class="diag" hidden></pre>
+    <button id="similarLog" class="ghost">查看运行日志（卡住时看这个）</button>
+    <pre id="similarLogBox" class="diag" hidden></pre>
+    <div id="similarProgress" class="status"></div>
+    <div id="similarResultWrap" hidden>
+      <div id="similarSummary" class="result-head"></div>
+      <div class="result-actions">
+        <button id="similarCopyAll" class="ghost">复制全部结果</button>
+        <button id="similarCopyFail" class="ghost">只复制失败项</button>
+      </div>
+      <pre id="similarResult" class="diag"></pre>
+    </div>
+  </section>
+</main>
+<script src="columns.js"></script>
+<script src="parser.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# 表格与经营数据（含商品 ID、SKU、价格，不要提交）
+*.xlsx
+*.xls
+*.csv
+
+# 本地测试与样本数据（含真实商品信息，不公开）
+/tests/
+
+# 临时产物与日志
+*.log
+*.tmp
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 依赖
+node_modules/

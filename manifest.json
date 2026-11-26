@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "电商小助手",
+  "version": "0.9.0",
+  "description": "抖店经营提效工具集：从 Excel 批量创建 SKU 并填写价格编码，按商品 ID 批量发布相似品。",
+  "permissions": ["activeTab", "storage", "scripting", "tabs", "sidePanel"],
+  "host_permissions": ["https://*.jinritemai.com/*", "https://*.douyin.com/*"],
+  "action": { "default_popup": "popup.html", "default_title": "电商小助手" },
+  "side_panel": { "default_path": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://*.jinritemai.com/*", "https://*.douyin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.jinritemai.com/*", "https://*.douyin.com/*"],
+      "js": ["similar.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
