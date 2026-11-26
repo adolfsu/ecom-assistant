@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.6';
+  const VERSION = '0.9.7';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -66,7 +66,7 @@
     }
     const rect = element.getBoundingClientRect();
     // ratio 可以指定点击位置（0~1 的相对坐标），默认点正中心。
-    // 素材卡片的勾选框常在右下角，点中心只会点到图片
+    // 素材卡片的勾选框压在缩略图右上角，点中心只会点到图片
     const ratio = Array.isArray(options.ratio) ? options.ratio : [0.5, 0.5];
     const x = Math.min(Math.max(rect.left + rect.width * ratio[0], 1), window.innerWidth - 2);
     const y = Math.min(Math.max(rect.top + rect.height * ratio[1], 1), window.innerHeight - 2);
@@ -1551,39 +1551,100 @@
 
   /**
    * 卡片当前是否选中。
-   * 先认原生 checkbox，再看 aria-checked，最后看自定义勾选框的样式类。
+   * 只认可靠信号：原生 checkbox 的 checked、`aria-checked`。
+   * 自定义勾选框靠「点前点后类名变多」判断（见 checkMarks），
    * known=false 表示认不出来 —— 调用方不能把「认不出」当成功。
    */
   function cardSelectedState(card) {
     const box = card.querySelector('input[type="checkbox"]');
     if (box) return { known: true, selected: box.checked };
-    const node = card.querySelector('[aria-checked]');
-    if (node) return { known: true, selected: node.getAttribute('aria-checked') === 'true' };
-    if (card.querySelector('[class*="checked" i], [class*="selected" i]')) return { known: true, selected: true };
+
+    const aria = card.querySelector('[aria-checked]');
+    if (aria) {
+      const value = String(aria.getAttribute('aria-checked')).toLowerCase();
+      if (value === 'true') return { known: true, selected: true };
+      if (value === 'false') return { known: true, selected: false };
+    }
+
     return { known: false, selected: false };
   }
 
-  /** 卡片外观签名：认不出勾选状态时，用它判断「点了之后有没有变化」 */
+  /**
+   * 勾选标记的个数（class 里带 checked / selected 的元素）。
+   * 只用来比较「点之前 vs 点之后」有没有多出标记，不单独当「已选中」的判据 ——
+   * 卡片上本来就可能有 active 之类常驻类，拿它当已选中会误判成「一条都能选中」，反而更危险。
+   */
+  function checkMarks(card) {
+    try {
+      return card.querySelectorAll(
+        '[class*="checked" i], [class*="selected" i], [data-checked="true"], [data-selected="true"]'
+      ).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 卡片外观签名：认不出勾选状态时，用它判断「点了之后有没有变化」。
+   * 除了卡片自身的样式，把后代的 class 也拼进去 —— 勾选框往往只是个小方块，
+   * 变了样子但卡片本身不一定换样式，只看卡片会漏掉。
+   */
   function cardLook(card) {
     try {
       const style = getComputedStyle(card);
-      return `${card.className}|${style.borderTopColor}|${style.boxShadow}|${style.backgroundColor}`;
+      let children = '';
+      try {
+        children = Array.from(card.querySelectorAll('*'))
+          .slice(0, 40)
+          .map(element => String(element.className || ''))
+          .join(',');
+      } catch {
+        /* 个别环境拿不到后代就只比卡片自身 */
+      }
+      return `${card.className}|${style.borderTopColor}|${style.boxShadow}|${style.backgroundColor}|${children}`.slice(0, 600);
     } catch {
       return '';
     }
   }
 
+  /** 勾选框在卡片里的相对位置（0~1），拿不到就返回 null */
+  function boxRatio(card, box) {
+    try {
+      const cardRect = card.getBoundingClientRect();
+      const boxRect = box.getBoundingClientRect();
+      if (cardRect.width < 2 || cardRect.height < 2) return null;
+      // 尺寸为 0 说明它被藏起来了，位置没有参考价值
+      if (boxRect.width < 2 || boxRect.height < 2) return null;
+      const x = (boxRect.left + boxRect.width / 2 - cardRect.left) / cardRect.width;
+      const y = (boxRect.top + boxRect.height / 2 - cardRect.top) / cardRect.height;
+      if (!(x > -0.05 && x < 1.05 && y > -0.05 && y < 1.05)) return null;
+      return [Math.min(Math.max(x, 0.03), 0.97), Math.min(Math.max(y, 0.03), 0.97)];
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * 选中一张素材。
-   * 勾选框通常压在图片右下角，或者是个透明/被遮住的 input（pointer-events 被改过），
-   * 所以只点卡片中心点不到它。按「勾选框 click() → 直接派发 → 外层 → 右下角 → 中心」逐个试，
-   * 每一步都校验，全都不成才判失败 —— 绝不在没选中的情况下继续点「确定」。
+   * 抖店素材卡片的勾选框压在**缩略图右上角**（不在卡片本体里，也可能是个透明 input），
+   * 所以点卡片中心只会点到图片。按「勾选框 click() → 直接派发 → 外层 → 勾选框实际位置
+   * → 缩略图右上角 → 卡片右上角 → 右下角 → 中心」逐个试，每一步都校验，
+   * 全都不成才判失败 —— 绝不在没选中的情况下继续点「确定」。
    */
   async function selectLibraryCard(card) {
     if (cardSelectedState(card).selected) return { ok: true, how: '本来就已经勾选' };
 
     const before = cardLook(card);
-    const box = card.querySelector('input[type="checkbox"]');
+    const marks = checkMarks(card);
+    // 点了一次之后可能「勾上又一次点掉了」，所以每一步都要重看状态
+    const picked = () => {
+      const state = cardSelectedState(card);
+      if (state.selected) return true;
+      if (!state.known && (checkMarks(card) > marks || cardLook(card) !== before)) return true;
+      return false;
+    };
+
+    const box = card.querySelector('input[type="checkbox"], [role="checkbox"]');
     const attempts = [];
     if (box) {
       attempts.push({ name: '勾选框 click()', run: () => box.click() });
@@ -1593,9 +1654,18 @@
         attempts.push({ name: '勾选框外层', run: () => mouseClick(wrap, { strict: true }) });
         attempts.push({ name: '勾选框外层坐标点击', run: () => mouseClick(wrap) });
       }
+      const ratio = boxRatio(card, box);
+      if (ratio) attempts.push({ name: '勾选框实际位置', run: () => mouseClick(card, { ratio }) });
     }
-    // 勾选框在卡片右下角；点中心只会点到图片
-    attempts.push({ name: '卡片右下角', run: () => mouseClick(card, { ratio: [0.92, 0.9] }) });
+    // 勾选框压在缩略图右上角，点图片的右上区域最容易命中；卡片右上角同理（卡片还含文件名，比例偏低）
+    attempts.push({
+      name: '缩略图右上角',
+      run: () => {
+        const thumb = card.querySelector('img');
+        return thumb ? mouseClick(thumb, { ratio: [0.9, 0.1] }) : false;
+      }
+    });
+    attempts.push({ name: '卡片右上角', run: () => mouseClick(card, { ratio: [0.9, 0.1] }) });
     attempts.push({ name: '卡片中心', run: () => mouseClick(card) });
 
     for (const attempt of attempts) {
@@ -1604,11 +1674,8 @@
       } catch {
         continue;
       }
-      await sleep(260);
-      const state = cardSelectedState(card);
-      if (state.selected) return { ok: true, how: attempt.name };
-      // 认不出勾选控件时，退一步看卡片外观有没有变化（出现蓝框或勾选角标）
-      if (!state.known && cardLook(card) !== before) return { ok: true, how: `${attempt.name}（卡片外观已变化）` };
+      await sleep(280);
+      if (picked()) return { ok: true, how: attempt.name };
     }
 
     return { ok: false, how: '所有点击方式都没能让它出现勾选' };

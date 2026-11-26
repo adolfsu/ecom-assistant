@@ -292,6 +292,14 @@ platforms/
 
 - 导购短标题上限是 **24 个字符位**（中文/全角 2 位、英文数字 1 位），不是 24 个字；
   纯中文只填 12 个字。`app/shared/titles.js` 与 `similar.js` 同步改成按宽度累计。
-- 素材库选中：`selectLibraryCard` 改为 async 并逐步校验（click() → 严格派发 → 外层 → 右下角 → 中心），
+- 素材库选中：`selectLibraryCard` 改为 async 并逐步校验（click() → 严格派发 → 外层 → 右上角 → 中心），
   认不出勾选控件时按卡片外观变化判定；选不中直接取消弹窗，不再点确定。
 - 点「确定」后必须看到弹窗关闭，否则补点一次并报错；再校验主图 src 变化。
+
+### 2.1.5 修复
+
+- 勾选框在**缩略图右上角**，2.1.4 按右下角点所以必然点空。改为先读勾选框自身的
+  `getBoundingClientRect()` 换算相对坐标（`boxRatio`），再按「缩略图右上角 → 卡片右上角 → 中心」兜底；
+  删掉右下角那一路。
+- `cardSelectedState` 只认 `input.checked` / `aria-checked`；自定义方块靠 `checkMarks` +
+  `cardLook` 比较点前点后，避免把未选中卡片误判成已选中。版本 2.1.5 / 0.9.7。
