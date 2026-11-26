@@ -201,6 +201,38 @@ platforms/
 
 待真机验证：弹窗→侧边栏的手势跳转、侧边栏宽度自适应、深色主题观感。
 
-## 十二、下一步
+## 十二、阶段一（功能迁移）完成情况
 
-阶段一剩余：把两个功能的操作界面迁入详情页（四步 / 三步流程），复用现有 `content.js` / `similar.js` 协议，不改执行逻辑。
+版本 2.0.1。两个功能的操作界面已从旧面板迁到侧边栏，执行链路未改。
+
+| 功能 | 步骤 | 数据/协议 |
+|---|---|---|
+| 批量填充 SKU | 导入 Excel → 字段匹配 → 数据预览 → 执行 | 复用 `PING` / `DIAGNOSE` / `BATCH_FILL`；表格与映射仍写 `doudianBatchWorkbook` / `doudianBatchState`，与旧面板共用 |
+| 批量发布相似品 | 输入商品 ID → 确认任务 → 执行与结果 | 复用 `SIMILAR_PING` / `SIMILAR_DIAG` / `SIMILAR_RUN` / `SIMILAR_STOP`；进度与结果读 `similarRun` / `similarProgress`，关面板不影响队列 |
+
+新增模块（均为纯读取/展示，不改页面执行）：
+
+- `app/shared/excel.js`：XLSX 读取（从 popup.js 搬出，参数改为 File 对象）；
+- `app/shared/sku.js`：表头认列 + 记录构造（规则仍在 `columns.js` / `parser.js`，不复制第二份）；
+- `app/shared/ids.js`、`app/shared/clipboard.js`、`app/shared/run-format.js`：ID 解析、写剪贴板、结果复制文本；
+- `core/page-bridge.js`：定位目标标签页（排除扩展页）+ 内容脚本版本握手/注入；
+- `app/sidepanel/views/{wizard,feature-views,feature-sku-fill,feature-similar-publish}.js`。
+
+设计取舍（按方案第 11 条）：
+
+- 功能详情页的正文按 `feature.component` 从 `feature-views.js` 取，功能清单仍只来自注册中心；
+- 不伪造进度：SKU 填充执行期间只显示「正在执行 + 页面上的实际提示」，结束才按页面返回的真实结果汇总；
+- 能力声明按真实情况给：SKU 填充只有 `start`（页面里是一条消息跑完整个队列，没有停止协议），发布相似品有 `start / cancel / status`；
+- 旧面板保留为回退入口（详情页右上角「旧版面板」）；
+- SKU 填充的表格与映射沿用旧键名，两个入口来回切换不丢数据。
+
+新增离线检查：
+
+- `tests/check-wizards.js`：表格→记录（拆分/必填/零价格/跳过行）、ID 解析与去重、失败原因复制文本（全部/只失败）、两个功能页在真实 storage 数据下渲染到正确步骤、`MSG` 常量与页面脚本监听字符串对齐；
+- `tests/check-views.js` 增补：两个详情页必须渲染出「真实操作界面」而不是占位。
+
+## 十三、下一步（阶段二）
+
+1. 统一任务模型 + 持久化（重启后标记 `interrupted`），把两个功能的结果落成任务记录，任务中心不再空状态；
+2. 执行器注册（`start / pause / resume / cancel / getStatus`），发布相似品优先接；
+3. 若要做到「SKU 填充可暂停/可续跑」，需要给 `content.js` 增加进度上报与停止检查点（只加不改填充流程）。

@@ -801,6 +801,13 @@
       return `第${item.row}行 ${item.skuName}：${details}`;
     });
     showNotice(`批量填入完成 ${succeeded}/${records.length} 条\n${lines.join('\n')}`, succeeded !== records.length, 15000);
+    // 只读上报：侧边栏关掉时这次的回复会丢，落一份结果到 storage，下次打开还能看到。
+    // 不参与填充流程，写失败也不影响本次执行。
+    try {
+      chrome.storage.local.set({ skuFillRun: { at: Date.now(), total: records.length, results } });
+    } catch {
+      /* 忽略 */
+    }
     return { results };
   }
 

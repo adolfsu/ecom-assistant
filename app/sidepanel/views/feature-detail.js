@@ -1,7 +1,8 @@
 /*
- * 功能详情页：统一外壳（返回 / 名称 / 平台 / 收藏 / 步骤 / 配置区 / 底部固定操作区）。
- * 阶段一所有功能都还是「旧面板承载」，因此配置区显示提示 + 回退入口，
- * 不伪造任何功能表单（方案 11.7：不允许用模拟进度/假界面替代真实能力）。
+ * 功能详情页外壳：返回 / 名称 / 平台 / 收藏 / 正文 / 旧版回退。
+ *
+ * 正文按功能注册表里的 component 字段动态取（views/feature-views.js 里的视图表），
+ * 没有对应视图的功能才落到「迁移中」占位——不给未实现的功能造界面（方案 11.7）。
  */
 
 import { h } from '../../shared/dom.js';
@@ -9,8 +10,9 @@ import { icon } from '../../shared/icons.js';
 import { getFeature } from '../../../core/feature-registry.js';
 import { getPlatform } from '../../../core/platform-registry.js';
 import { platformName, statusBadge, emptyState } from './components.js';
+import { featureViews } from './feature-views.js';
 
-export function render(ctx) {
+export async function render(ctx) {
   const featureId = decodeURIComponent(ctx.route.params.featureId || '');
   const feature = getFeature(featureId);
   if (!feature) {
@@ -40,33 +42,51 @@ export function render(ctx) {
   });
   favBtn.innerHTML = icon('star');
 
-  return h('div', {}, [
-    h('div', { class: 'page-head' }, [
-      h('button', {
-        class: 'btn btn-icon',
-        title: '返回功能中心',
-        onclick: () => ctx.navigate('#/features'),
-        html: icon('arrowLeft'),
-      }),
-      h('div', { class: 'grow' }, [
-        h('h1', { class: 'page-title', text: feature.name }),
-        h('div', { class: 'row', style: 'margin-top:5px;gap:6px' }, [
-          h('span', { class: 'badge badge-primary', text: platformName(feature.platformId) }),
-          h('span', { class: 'badge', text: feature.categoryLabel }),
-          statusBadge(feature.status),
-        ]),
-      ]),
-      favBtn,
-    ]),
+  // 旧版面板暂时保留为回退入口：新界面万一卡住，用户还有一条能用的路
+  const legacyBtn = feature.legacyPanel
+    ? h('button', {
+      class: 'btn btn-sm btn-ghost',
+      title: '打开旧版面板（回退用）',
+      onclick: () => ctx.openLegacyPanel(),
+    }, ['旧版面板', h('span', { html: icon('external') })])
+    : null;
 
-    h('p', { class: 'page-sub', style: 'margin:-6px 0 12px' , text: feature.description }),
+  const head = h('div', { class: 'page-head' }, [
+    h('button', {
+      class: 'btn btn-icon',
+      title: '返回功能中心',
+      onclick: () => ctx.navigate('#/features'),
+      html: icon('arrowLeft'),
+    }),
+    h('div', { class: 'grow' }, [
+      h('h1', { class: 'page-title', text: feature.name }),
+      h('div', { class: 'row', style: 'margin-top:5px;gap:6px' }, [
+        h('span', { class: 'badge badge-primary', text: platformName(feature.platformId) }),
+        h('span', { class: 'badge', text: feature.categoryLabel }),
+        statusBadge(feature.status),
+      ]),
+    ]),
+    legacyBtn,
+    favBtn,
+  ]);
+
+  const view = featureViews[feature.component];
+  if (view) {
+    const content = await view(ctx, feature);
+    return h('div', {}, [head, content]);
+  }
+
+  return h('div', {}, [
+    head,
+
+    h('p', { class: 'page-sub', style: 'margin:-6px 0 12px', text: feature.description }),
 
     h('div', { class: 'notice', style: 'margin-bottom:12px' }, [
       h('span', { html: icon('info') }),
       h('div', {}, [
-        h('div', { text: '当前为 2.0 骨架版本，这个功能的操作界面还没迁过来。' }),
+        h('div', { text: '这个功能的操作界面还没迁到 2.0。' }),
         h('div', { style: 'margin-top:2px;opacity:.85' },
-          '阶段一先确认导航、平台识别与视觉规范；迁移完成后这里会换成四步/三步操作流，已验证的执行逻辑不变。'),
+          '先在旧版面板里使用；迁移完成后这里会换成对应的操作流程，执行逻辑不变。'),
       ]),
     ]),
 
@@ -97,11 +117,6 @@ export function render(ctx) {
         ])
       )),
     ]) : null,
-
-    h('div', { class: 'card' }, [
-      h('div', { class: 'setting-title', text: '功能配置' }),
-      h('div', { class: 'setting-desc', text: '迁移中：配置表单将在阶段一后续提交接入。' }),
-    ]),
 
     h('div', { class: 'detail-footer' }, [
       h('button', {

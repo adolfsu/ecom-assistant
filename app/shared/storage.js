@@ -12,10 +12,23 @@ export const KEYS = {
   pendingFeature: 'ui.pendingFeature',
   panelState: 'ui.panelState',
   tasks: 'tasks',
+
+  // 批量填充 SKU：沿用旧面板的键名，两个入口看到的是同一份数据
+  skuWorkbook: 'doudianBatchWorkbook',
+  skuWorkbookName: 'doudianBatchWorkbookName',
+  skuState: 'doudianBatchState',
+  skuRun: 'skuFillRun',
+
+  // 批量发布相似品：键名由 similar.js / background.js 写入，这里只读
+  similarIds: 'similarIds',
+  similarRun: 'similarRun',
+  similarProgress: 'similarProgress',
+  similarDebug: 'similarDebug',
+  similarListTabId: 'similarListTabId',
 };
 
 /** 清理数据时只动这些前缀，绝不 unshift 整个 storage.local */
-export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar'];
+export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar', 'skuFillRun'];
 
 const local = () => chrome.storage.local;
 
@@ -30,6 +43,11 @@ export async function write(key, value) {
 
 export async function readMany(keys) {
   return local().get(keys);
+}
+
+/** 一次写多个键（表格 + 映射这种成组数据，少一次往返） */
+export async function writeMany(values) {
+  await local().set(values || {});
 }
 
 export async function removeMany(keys) {
