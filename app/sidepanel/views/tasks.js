@@ -7,6 +7,7 @@
 import { h, clear, timeAgo } from '../../shared/dom.js';
 import { icon } from '../../shared/icons.js';
 import { read, KEYS, onChange } from '../../shared/storage.js';
+import { clearFinishedTasks, isFinishedTask } from '../../shared/tasks.js';
 import { getFeature } from '../../../core/feature-registry.js';
 import { emptyState, platformName } from './components.js';
 
@@ -36,16 +37,72 @@ export async function render(ctx) {
 
   const listBox = h('div', {});
   const tabs = h('div', { class: 'tabs' });
+  // 「清理」两段式：第一次点变成「确认清理 N 条」，4 秒内再点才真删。
+  // 侧边栏里没有原生确认框，做成按钮自己确认更稳，也不会误删
+  let confirming = false;
+  let confirmTimer = 0;
+  const cleanBtn = h('button', { class: 'btn btn-sm', type: 'button' });
+  const hint = h('p', { class: 'page-hint', text: '' });
+
   const root = h('div', {}, [
     h('div', { class: 'page-head' }, [
       h('div', { class: 'grow' }, [
         h('h1', { class: 'page-title', text: '任务中心' }),
         h('p', { class: 'page-sub', text: '每次执行都会留下记录，关闭弹窗或侧边栏不影响任务本身。' }),
       ]),
+      cleanBtn,
     ]),
+    hint,
     tabs,
     listBox,
   ]);
+
+  function drawClean() {
+    const removable = list.filter(task => isFinishedTask(task)).length;
+    const running = list.length - removable;
+    clear(cleanBtn);
+    if (confirming) {
+      cleanBtn.setAttribute('style', 'color:var(--c-error);border-color:var(--c-error)');
+      cleanBtn.append(document.createTextNode(`确认清理 ${removable} 条`));
+      return;
+    }
+    cleanBtn.setAttribute('style', '');
+    cleanBtn.disabled = removable === 0;
+    cleanBtn.title = removable === 0
+      ? '没有可清理的记录'
+      : `清除 ${removable} 条已结束的记录${running ? `；进行中的 ${running} 条会保留` : ''}`;
+    cleanBtn.append(h('span', { html: icon('trash') }), document.createTextNode('清理'));
+  }
+
+  let hintTimer = 0;
+  function showHint(text) {
+    hint.textContent = text;
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      hint.textContent = '';
+    }, 5000);
+  }
+
+  cleanBtn.addEventListener('click', async () => {
+    const removable = list.filter(task => isFinishedTask(task)).length;
+    if (!removable) return;
+    if (!confirming) {
+      confirming = true;
+      clearTimeout(confirmTimer);
+      confirmTimer = setTimeout(() => {
+        confirming = false;
+        drawClean();
+      }, 4000);
+      drawClean();
+      return;
+    }
+    clearTimeout(confirmTimer);
+    confirming = false;
+    const result = await clearFinishedTasks();
+    await reload();
+    const kept = result && result.kept ? `，保留进行中 ${result.kept} 条` : '';
+    showHint(`已清理 ${(result && result.removed) || 0} 条${kept}`);
+  });
 
   function drawTabs() {
     clear(tabs);
@@ -117,6 +174,7 @@ export async function render(ctx) {
     list = await read(KEYS.tasks, []);
     if (!Array.isArray(list)) list = [];
     list.sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+    drawClean();
     drawTabs();
     drawList();
   }

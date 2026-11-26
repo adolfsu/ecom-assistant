@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "电商小助手",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "description": "抖店经营提效工具集：批量填充 SKU、旧链上新、裂变链接。2.0 采用弹窗快速入口 + 侧边栏工作台。",
   "permissions": [
     "activeTab",

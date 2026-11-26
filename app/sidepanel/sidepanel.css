@@ -141,6 +141,20 @@ body {
   line-height: 1.55;
 }
 
+/* 一次性提示（如「已清理 12 条」）：占位固定，出现/消失不会让下面的列表跳动 */
+.page-hint {
+  margin: 0 0 8px;
+  color: var(--c-success);
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 18px;
+}
+
+.page-hint:empty {
+  margin: 0;
+  min-height: 0;
+}
+
 .grid {
   display: grid;
   gap: 10px;

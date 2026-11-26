@@ -106,6 +106,33 @@ export async function listTasks() {
   return tasks.slice().sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
 }
 
+/**
+ * 已结束的状态白名单：**只有**这些允许清理。
+ * 用白名单而不是「排除 running/pending/paused」：以后加新状态（比如重试中）时，
+ * 未知状态默认保留，宁可留一条多余记录，也不会把还在跑的记录删掉。
+ */
+const FINISHED_STATUS = ['completed', 'completed_with_errors', 'failed', 'cancelled', 'interrupted'];
+
+/** 这条记录是否已经结束（可以清理）；进行中、状态未知都返回 false */
+export function isFinishedTask(task) {
+  return Boolean(task) && FINISHED_STATUS.includes(String(task.status || ''));
+}
+
+/**
+ * 清理**已结束**的任务记录，进行中的保留。
+ * 走和 recordRun 同一条写队列：否则清理的读-改-写可能和正在回传的进度撞车，
+ * 把刚写进来的新进度覆盖掉。
+ */
+export async function clearFinishedTasks() {
+  return mutate(tasks => {
+    const keep = tasks.filter(task => !isFinishedTask(task));
+    const removed = tasks.length - keep.length;
+    tasks.length = 0;
+    keep.forEach(task => tasks.push(task));
+    return { removed, kept: keep.length };
+  });
+}
+
 /** 只清理任务记录 */
 export async function clearTasks() {
   await write(KEYS.tasks, []);
