@@ -283,7 +283,7 @@ async function activeTab() {
   return tab;
 }
 
-const CONTENT_VERSION = '0.9.8';
+const CONTENT_VERSION = '0.9.9';
 
 async function connectContentScript(tab) {
   let version = null;
@@ -384,7 +384,7 @@ chrome.storage.local.get(['doudianBatchWorkbook', 'doudianBatchWorkbookName', 'd
 
 /* ---------------- 发布相似品 ---------------- */
 
-const SIMILAR_VERSION = '0.9.8';
+const SIMILAR_VERSION = '0.9.9';
 
 // 去掉粘贴时常带的首尾引号（不写引号字面量，避免和静态检查的字符串剥离打架）
 function stripQuotes(value) {

@@ -8,7 +8,7 @@
  * 列表页走 runVariants()，发布页由 SIMILAR_PUBLISH.variant 触发 applyVariant()。
  */
 (() => {
-  const VERSION = '0.9.8';
+  const VERSION = '0.9.9';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -932,12 +932,15 @@
     return null;
   }
 
+  /** 等新标签页被接管的时长：发布页是重 SPA，实测偶尔要 30 秒以上才加载完 */
+  const OPEN_WAIT = 45000;
+
   /**
    * 等后台真正接管新开的发布页（pending.sent），避免"以为开了其实没开"。
    * 同时盯住确认弹窗：弹窗已经关掉、后台也没见到任何新建标签页，说明平台把这次发布
-   * 拒了（重复发布最常见），这时立刻返回失败原因，不必干等 35 秒。
+   * 拒了（重复发布最常见），这时立刻返回失败原因，不必干等。
    */
-  async function waitOpenOutcome(timeout = 35000) {
+  async function waitOpenOutcome(timeout = OPEN_WAIT) {
     const startedAt = Date.now();
     let dialogGoneAt = 0;
     while (Date.now() - startedAt < timeout) {
@@ -1162,9 +1165,9 @@
     }
 
     // 点了确认 ≠ 发布页开了：等后台真正接管新标签页，再往上报“已打开发布页”
-    const outcome = await waitOpenOutcome(25000);
+    const outcome = await waitOpenOutcome(OPEN_WAIT);
     const toast = findFailureToast();
-    logStep(`接管结果：${outcome.ok ? '已接管' : outcome.gone ? '登记被撤销/没开新标签' : outcome.closed ? '弹窗已关闭且没有新标签页' : '35 秒内无新标签页'}${toast ? `；平台提示：${toast}` : ''}`);
+    logStep(`接管结果：${outcome.ok ? '已接管' : outcome.gone ? '登记被撤销/没开新标签' : outcome.closed ? '弹窗已关闭且没有新标签页' : `${Math.round(OPEN_WAIT / 1000)} 秒内无新标签页`}${toast ? `；平台提示：${toast}` : ''}`);
     if (!outcome.ok) {
       if (!outcome.gone) {
         try {
@@ -1672,14 +1675,52 @@
     return [];
   }
 
+  const NAME_EXT_RE = /\.(?:jpe?g|png|webp|gif|bmp)/i;
+
+  /**
+   * 从一段文本里挑出文件名。
+   *
+   * 这里**不能**按空白切一段：文件名本身就可能带空格。
+   * 0.9.9 之前用的是 /[^\s/\\]+\.(jpg)/，于是「创意图 (4).jpg」被切成「(4).jpg」，
+   * 搜索明明命中了唯一一张图，却因为「名字对不上」被判成没搜到，
+   * 接着清空重搜、再判失败 —— 日志里「列表 1 张：(4).jpg」就是这么来的。
+   * 改成「取到扩展名结尾为止」，名字里的空格原样保留。
+   */
+  function pickFileName(value) {
+    const text = norm(value);
+    if (!text || !NAME_EXT_RE.test(text)) return '';
+    const found = text.match(/^(.*?\.(?:jpe?g|png|webp|gif|bmp))/i);
+    return (found ? found[1] : text).trim();
+  }
+
+  /**
+   * 卡片上的文件名。平台有三种给法，都要试：
+   *   1. 文件名节点（fileName）的文本；
+   *   2. 节点/图片的 title、alt（名字被拆成多个节点时全名常在这里）；
+   *   3. 整张卡片的文本（兜底，里面还夹着尺寸、大小）。
+   */
   function cardName(card) {
     if (!card) return '';
     const node = card.querySelector('[class*="fileName" i]') || card.querySelector('[class*="name" i]');
-    const text = norm(node ? node.textContent : card.textContent);
-    if (!text) return '';
-    // 卡片里还常夹着尺寸、状态文字，抠出第一个像文件名的片段
-    const found = text.match(/[^\s/\\]+\.(?:jpe?g|png|webp|gif|bmp)/i);
-    return found ? norm(found[0]) : text;
+    const image = card.querySelector('img');
+    const attr = (element, name) => (element && element.getAttribute ? element.getAttribute(name) : '');
+
+    const direct = [
+      node ? node.textContent : '',
+      attr(node, 'title'),
+      attr(image, 'alt'),
+      attr(image, 'title'),
+      attr(card, 'title')
+    ];
+    const named = direct.map(pickFileName).filter(Boolean);
+    // 名字被拆成多个节点时，节点文本只有后半截，全名落在 title/alt 里 —— 取最长的那份
+    if (named.length) {
+      return named.sort((left, right) => right.length - left.length)[0];
+    }
+    const whole = pickFileName(card.textContent);
+    if (whole) return whole;
+    // 一个都不像文件名：把原文带回日志，下次能直接看出平台改成了什么样
+    return norm(node ? node.textContent : card.textContent).slice(0, 40);
   }
 
   function stripExtName(name) {
@@ -1700,7 +1741,21 @@
   }
 
   /**
-   * 卡片名与目标名的匹配分：3 = 文件名全等，2 = 去扩展名后相等，0 = 不匹配。
+   * 名字的「尾段」：按空格切，取最后一段。「创意图 (4).jpg」→「(4).jpg」。
+   * 平台有时只把这半截渲染进 DOM（前半段在另一个节点里），搜索却已经是按全名搜的。
+   */
+  function nameTail(name) {
+    const text = norm(name);
+    if (!text) return '';
+    const parts = text.split(' ');
+    return normalizeName(parts[parts.length - 1]);
+  }
+
+  /** 尾段是不是「(4).jpg / 4.jpg」这种纯编号 —— 只有这种才允许按尾段认，避免前缀丢掉时认错图 */
+  const INDEX_TAIL_RE = /^\(?\d+\)?\.(?:jpe?g|png|webp|gif|bmp)$/;
+
+  /**
+   * 卡片名与目标名的匹配分：3 = 文件名全等，2 = 去扩展名后相等，1 = 尾段编号对上，0 = 不匹配。
    * 不用「包含」：搜 1.jpg 时 11.jpg 也包含它，会选错图。
    */
   function nameScore(cardText, imageName) {
@@ -1716,6 +1771,10 @@
 
     if (tokens.some(token => token === full)) return 3;
     if (tokens.some(token => normalizeName(stripExtName(token)) === body)) return 2;
+
+    // 只读到「(4).jpg」这半截时的兜底：编号一致就算同一张
+    const tail = nameTail(imageName);
+    if (tail && INDEX_TAIL_RE.test(tail) && nameTail(cardText) === tail) return 1;
     return 0;
   }
 
@@ -1927,21 +1986,38 @@
 
     // 搜索没有真正生效时，列表里是整个文件夹的图，目标不一定在第一张，
     // 所以扫全部卡片取「匹配分最高」的那张，而不是只看第一张
+    let looseLogged = false;
     const findTarget = () => {
       const scope = liveDialog();
       if (!scope) return null;
+      const cards = libraryCards(scope);
       let best = null;
-      for (const card of libraryCards(scope)) {
+      for (const card of cards) {
         const score = nameScore(cardName(card), imageName);
         if (!score) continue;
         if (!best || score > best.score) best = { card, score };
         if (score === 3) break;
       }
-      return best ? best.card : null;
+      if (best) return best.card;
+      // 最后一道兜底：搜索框里还是我们的词、列表只剩一张 —— 搜索确实生效了，
+      // 只是卡片上的名字没读全（平台只渲染了后半截）。这时认这张，
+      // 别去清空搜索框：一清空列表就变回整个文件夹，永远搜不到。
+      if (cards.length === 1 && String((findLibrarySearch(scope) || {}).value || '') === imageName) {
+        if (!looseLogged) {
+          looseLogged = true;
+          logStep(`搜索只回了 1 张（名称读到「${cardName(cards[0]) || '空'}」），按搜索结果认定为目标图`);
+        }
+        return cards[0];
+      }
+      return null;
     };
     const listNames = () => {
       const scope = liveDialog();
       return scope ? libraryCards(scope).map(card => cardName(card)).filter(Boolean) : [];
+    };
+    const searchValue = () => {
+      const input = liveInput();
+      return input ? String(input.value || '') : '';
     };
 
     logStep(`素材库已打开，搜索「${imageName}」`);
@@ -1953,7 +2029,7 @@
     // 1) 回车可能没被平台接住（有的库只认「查询」按钮），补点一次
     if (!target) {
       const names = listNames();
-      logStep(`回车后没匹配到（列表 ${names.length} 张：${names.slice(0, 3).join('、') || '空'}），补点「查询」再等`);
+      logStep(`回车后没匹配到（列表 ${names.length} 张：${names.slice(0, 3).join('、') || '空'}；搜索框=「${searchValue()}」），补点「查询」再等`);
       const query = findLibraryQueryButton(liveDialog()) || findSearchIconButton(liveInput());
       if (query) {
         mouseClick(query);
@@ -1963,9 +2039,10 @@
       }
     }
 
-    // 2) 输入框是受控组件，偶尔把值打回上一个关键词；清空重打一次
-    if (!target) {
-      logStep('还是没匹配到，清空搜索框重新输入一次');
+    // 2) 输入框是受控组件，偶尔把值打回上一个关键词；只有**值真的变了**才清空重打。
+    //    值还是我们的词就说明搜索已生效，此时清空等于把结果扔掉。
+    if (!target && searchValue() !== imageName) {
+      logStep(`搜索框被平台改成「${searchValue() || '空'}」，清空重新输入一次`);
       await typeLibrarySearch(imageName);
       const query = findLibraryQueryButton(liveDialog()) || findSearchIconButton(liveInput());
       if (query) mouseClick(query);
@@ -1980,10 +2057,13 @@
 
     if (!target) {
       const names = listNames();
+      const raw = libraryCards(liveDialog()).slice(0, 3)
+        .map(card => norm(card.textContent).slice(0, 24))
+        .filter(Boolean);
       closeLibraryDialog(liveDialog());
       throw new Error(names.length
-        ? `素材库里没搜到「${imageName}」（列表 ${names.length} 张，前三个：${names.slice(0, 3).join('、')}），请确认左侧已选中目标文件夹`
-        : `素材库里没搜到「${imageName}」（列表是空的），请确认左侧已选中目标文件夹、且图库里有这张图`);
+        ? `素材库里没搜到「${imageName}」（列表 ${names.length} 张，前三个：${names.slice(0, 3).join('、') || '名称读不出'}；原文：${raw.join(' / ') || '空'}），请确认左侧已选中目标文件夹`
+        : `素材库里没搜到「${imageName}」（列表是空的，搜索框=「${searchValue()}」），请确认左侧已选中目标文件夹、且图库里有这张图`);
     }
 
     // 传函数而不是元素：列表重渲染后旧元素点不动，selectLibraryCard 会重新取

@@ -10,6 +10,7 @@
 
 const LIST_TAB_KEY = 'similarListTabId';
 const PENDING_KEY = 'similarPending';
+const ORPHAN_KEY = 'similarOrphans';
 const LOG_KEY = 'similarDebug';
 const PENDING_TTL = 180000;
 
@@ -118,6 +119,15 @@ async function handleReleaseTab(tabId) {
   const data = await chrome.storage.local.get([PENDING_KEY]);
   const pending = data[PENDING_KEY];
   if (!pending) {
+    // 撤销登记之后才加载完的创建页：没人会填它，留着只会越堆越多
+    const mark = await chrome.storage.local.get([ORPHAN_KEY]);
+    const orphan = mark[ORPHAN_KEY];
+    if (orphan && Array.isArray(orphan.ids) && orphan.ids.includes(tabId)
+      && Date.now() - Number(orphan.at || 0) < PENDING_TTL) {
+      await chrome.tabs.remove(tabId).catch(() => {});
+      log(`标签 ${tabId} 是没人接管的创建页，已关闭`);
+      return;
+    }
     log(`忽略标签 ${tabId}：当前没有待处理的发布任务`);
     return;
   }
@@ -141,6 +151,60 @@ async function handleReleaseTab(tabId) {
   await chrome.storage.local.set({ [PENDING_KEY]: { ...pending, tabId, sent: true } });
   log(`接管发布页标签 ${tabId}，通知它点击「发布商品」`);
   await triggerPublish(tabId);
+}
+
+/** 把这个标签记成「本次点击新建的」——onCreated 可能晚于接管判定，先记一遍更稳 */
+async function markCreated(tabId) {
+  const data = await chrome.storage.local.get([PENDING_KEY]);
+  const pending = data[PENDING_KEY];
+  if (!pending) return;
+  const created = Array.isArray(pending.created) ? pending.created.slice() : [];
+  if (created.includes(tabId)) return;
+  created.push(tabId);
+  await chrome.storage.local.set({ [PENDING_KEY]: { ...pending, created } });
+}
+
+function sleepBackground(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * 盯住「扩展自己开出来的」发布页，加载完就接管。
+ *
+ * 只靠 tabs.onUpdated 不够：标签在事件派发到我们之前就已经 complete 时，
+ * 那次 complete 就永远等不到了，表现是平台页明明开在那儿，列表页却报
+ * 「45 秒内无新标签页」。这里改成主动轮询，并把标签最终停在哪个 URL 记进日志，
+ * 下次失败能一眼看出是慢加载、还是平台把它踢去了别的页。
+ */
+async function watchCreatedTab(tabId, timeout = 60000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    let tab = null;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      tab = null;
+    }
+    if (!tab) {
+      log(`新标签 ${tabId} 已被关闭，停止等待`);
+      return;
+    }
+    const url = tab.url || tab.pendingUrl || '';
+    if (tab.status === 'complete' && url) {
+      if (!/jinritemai\.com/i.test(url)) {
+        log(`新标签 ${tabId} 停在了非抖店页面：${url.slice(0, 120)}`);
+        return;
+      }
+      if (url.indexOf('/list') >= 0) {
+        log(`新标签 ${tabId} 回到了商品列表页（平台没给创建页）：${url.slice(0, 120)}`);
+        return;
+      }
+      await handleReleaseTab(tabId);
+      return;
+    }
+    await sleepBackground(800);
+  }
+  log(`新标签 ${tabId} 60 秒内没有加载完成，停止等待`);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
@@ -204,6 +268,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         const tab = await chrome.tabs.create({ url: last.url, active: true });
         log(`平台弹窗被浏览器拦截，已由扩展打开发布页：${last.url}`);
         reply({ ok: true, opened: true, url: last.url, tabId: tab ? tab.id : null });
+        if (tab && tab.id) {
+          await markCreated(tab.id);
+          watchCreatedTab(tab.id).catch(() => {});
+        }
       } catch (error) {
         log(`扩展代打开发布页失败：${error.message}`);
         reply({ ok: false, opened: false, error: error.message });
@@ -213,11 +281,20 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   }
 
   if (message.type === 'SIMILAR_CANCEL') {
-    // 点了确认却没成功，撤销登记，避免误接管别的页面
-    chrome.storage.local.remove(PENDING_KEY);
-    log('发布页未成功打开，已撤销登记');
-    reply({ ok: true });
-    return;
+    // 点了确认却没成功，撤销登记，避免误接管别的页面；
+    // 顺手记下本次新开的标签，等它加载完发现没人接管时直接关掉（否则每失败一条就多一个残页）
+    (async () => {
+      const data = await chrome.storage.local.get([PENDING_KEY]);
+      const pending = data[PENDING_KEY];
+      const ids = pending && Array.isArray(pending.created) ? pending.created.slice(-3) : [];
+      if (ids.length) {
+        await chrome.storage.local.set({ [ORPHAN_KEY]: { ids, at: Date.now() } }).catch(() => {});
+      }
+      await chrome.storage.local.remove(PENDING_KEY).catch(() => {});
+      log('发布页未成功打开，已撤销登记');
+      reply({ ok: true });
+    })();
+    return true;
   }
 
   if (message.type === 'SIMILAR_LOG') {
