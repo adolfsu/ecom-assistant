@@ -4,12 +4,14 @@
  * 以前版本号在 4 个地方手写（manifest / popup 两个常量 / content.js / similar.js），
  * 拆成多文件后必然漏同步。这里改为运行时读 manifest.version。
  *
- * 过渡期：content.js 与 similar.js 目前仍硬编码 0.9.0 并用它做握手，
- * 所以比对时允许「manifest 版本」或「过渡常量」二者之一，等阶段二把
- * 内容脚本改成上报 manifest.version 后，删除 LEGACY 常量即可。
+ * 过渡期：content.js 与 similar.js 仍硬编码自己的版本号做握手，比对时允许
+ * 「manifest 版本」或「当前页面脚本版本」二者之一。
+ * 注意 LEGACY_SCRIPT_VERSION 必须跟着页面脚本一起改：它代表"这一版页面脚本"，
+ * 留着旧值等于默默接受旧代码 —— 0.9.1 起严格要求，旧副本会直接提示 F5 刷新，
+ * 而不是带着旧的搜索判定继续跑。
  */
 
-export const LEGACY_SCRIPT_VERSION = '0.9.0';
+export const LEGACY_SCRIPT_VERSION = '0.9.1';
 
 export function manifestVersion() {
   try {

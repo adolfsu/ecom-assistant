@@ -1,11 +1,21 @@
 /* 首页：只做「现在能干什么」的概览，不做数据大屏（方案 3.1）。 */
 
-import { h } from '../../shared/dom.js';
+import { h, timeAgo } from '../../shared/dom.js';
 import { icon } from '../../shared/icons.js';
 import { listFeatures, getFeature } from '../../../core/feature-registry.js';
+import { listTasks } from '../../shared/tasks.js';
 import { featureCard, sectionHead, emptyState, platformName } from './components.js';
 
-export function render(ctx) {
+const STATUS_TEXT = {
+  running: '执行中',
+  completed: '已完成',
+  completed_with_errors: '部分失败',
+  failed: '失败',
+  cancelled: '已取消',
+  interrupted: '已中断',
+};
+
+export async function render(ctx) {
   const all = listFeatures({});
   const favorites = listFeatures({ favoriteIds: ctx.state.favorites }).slice(0, 4);
   const quick = favorites.length ? favorites : all.slice(0, 4);
@@ -22,7 +32,11 @@ export function render(ctx) {
     ? all.some(feature => feature.supportedPages.includes(target.page.key))
     : false;
 
-  const runningCount = ctx.state.runningCount || 0;
+  // 首页的任务概览读真实任务记录，没有就显示没有，不编数字
+  const tasks = await listTasks();
+  const runningCount = tasks.filter(task => task.status === 'running').length;
+  ctx.state.runningCount = runningCount;
+  const recentTasks = tasks.slice(0, 3);
 
   return h('div', {}, [
     h('div', { class: 'page-head' }, [
@@ -96,8 +110,27 @@ export function render(ctx) {
       )),
     ] : null,
 
-    sectionHead('最近任务', '任务系统在第二阶段接入，这里暂时为空',
+    sectionHead('最近任务', recentTasks.length ? '按开始时间倒序' : '执行一次功能后会自动记录',
       h('button', { class: 'btn btn-ghost btn-sm', onclick: () => ctx.navigate('#/tasks') }, '任务中心')),
-    emptyState('inbox', '还没有任务记录', '阶段一尚未接入统一任务系统，执行记录不会落库'),
+    recentTasks.length
+      ? h('div', { class: 'card' }, recentTasks.map(task => {
+        const feature = getFeature(task.featureId);
+        const total = Number(task.progress?.total || 0);
+        const done = Number(task.progress?.done || 0);
+        return h('div', {
+          class: 'list-item',
+          style: 'cursor:pointer',
+          onclick: () => ctx.navigate(`#/feature/${encodeURIComponent(task.featureId)}`),
+        }, [
+          h('span', { class: 'feature-icon', style: 'width:26px;height:26px', html: icon(feature ? feature.icon : 'inbox') }),
+          h('div', { class: 'list-item-main' }, [
+            h('div', { class: 'list-item-title truncate', text: task.name || (feature ? feature.name : task.featureId) }),
+            h('div', { class: 'list-item-sub truncate' },
+              `${timeAgo(task.createdAt)}${total ? ` · ${done}/${total} 条` : ''}`),
+          ]),
+          h('span', { class: 'badge', text: STATUS_TEXT[task.status] || task.status }),
+        ]);
+      }))
+      : emptyState('inbox', '还没有任务记录', '跑一次批量填充 SKU 或批量发布相似品，这里就会出现记录'),
   ]);
 }

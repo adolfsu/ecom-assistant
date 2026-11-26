@@ -1,12 +1,12 @@
 /*
  * 任务中心。
- * 阶段一：只读展示，数据来自 storage 的 tasks 键（阶段二由后台任务管理器写入）。
- * 没有数据就明确显示「暂无」，绝不伪造进度条或假任务。
+ * 数据来自 storage 的 tasks 键：每个功能在开始/进度回传/面板重开恢复时补记一条，
+ * 同一个 runId 只对应一条，不会重复。没有数据就明确显示「暂无」，绝不伪造进度。
  */
 
 import { h, clear, timeAgo } from '../../shared/dom.js';
 import { icon } from '../../shared/icons.js';
-import { read, KEYS } from '../../shared/storage.js';
+import { read, KEYS, onChange } from '../../shared/storage.js';
 import { getFeature } from '../../../core/feature-registry.js';
 import { emptyState, platformName } from './components.js';
 
@@ -31,12 +31,21 @@ const STATUS_META = {
 };
 
 export async function render(ctx) {
-  const tasks = await read(KEYS.tasks, []);
-  const list = Array.isArray(tasks) ? tasks : [];
+  let list = [];
   let active = 'all';
 
   const listBox = h('div', {});
   const tabs = h('div', { class: 'tabs' });
+  const root = h('div', {}, [
+    h('div', { class: 'page-head' }, [
+      h('div', { class: 'grow' }, [
+        h('h1', { class: 'page-title', text: '任务中心' }),
+        h('p', { class: 'page-sub', text: '每次执行都会留下记录，关闭弹窗或侧边栏不影响任务本身。' }),
+      ]),
+    ]),
+    tabs,
+    listBox,
+  ]);
 
   function drawTabs() {
     clear(tabs);
@@ -67,7 +76,9 @@ export async function render(ctx) {
       listBox.append(emptyState(
         'inbox',
         active === 'all' ? '还没有任务记录' : '这个状态下没有任务',
-        '统一任务系统在第二阶段接入：任务会持久化到后台，关闭面板或切换标签页都不会中断。'
+        active === 'all'
+          ? '跑一次「批量填充 SKU」或「批量发布相似品」，这里就会出现记录（含成功/失败条数与时间）。'
+          : '换个筛选看看，或者先执行一个任务。'
       ));
       return;
     }
@@ -77,30 +88,50 @@ export async function render(ctx) {
       const meta = STATUS_META[task.status] || { text: task.status, cls: '' };
       const success = Number(task.result?.success || 0);
       const failed = Number(task.result?.failed || 0);
-      return h('div', { class: 'list-item' }, [
+      const done = Number(task.progress?.done || 0);
+      const total = Number(task.progress?.total || 0);
+      const countText = total
+        ? ` · ${done}/${total} 条${success || failed ? `（成功 ${success} / 失败 ${failed}）` : ''}`
+        : (success || failed ? ` · 成功 ${success} / 失败 ${failed}` : '');
+      const item = h('div', {
+        class: 'list-item',
+        style: 'cursor:pointer',
+        title: feature ? `打开「${feature.name}」` : '',
+        onclick: () => {
+          if (feature) ctx.navigate(`#/feature/${encodeURIComponent(task.featureId)}`);
+        },
+      }, [
         h('span', { class: 'feature-icon', style: 'width:26px;height:26px', html: icon(feature ? feature.icon : 'inbox') }),
         h('div', { class: 'list-item-main' }, [
           h('div', { class: 'list-item-title truncate', text: task.name || (feature ? feature.name : task.featureId) }),
           h('div', { class: 'list-item-sub truncate' },
-            `${platformName(task.platformId || '')} · ${timeAgo(task.createdAt)}`
-            + (success || failed ? ` · 成功 ${success} / 失败 ${failed}` : '')),
+            `${platformName(task.platformId || '')} · ${timeAgo(task.createdAt)}${countText}`),
         ]),
         h('span', { class: `badge ${meta.cls}`.trim(), text: meta.text }),
       ]);
+      return item;
     })));
   }
 
-  drawTabs();
-  drawList();
+  async function reload() {
+    list = await read(KEYS.tasks, []);
+    if (!Array.isArray(list)) list = [];
+    list.sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+    drawTabs();
+    drawList();
+  }
 
-  return h('div', {}, [
-    h('div', { class: 'page-head' }, [
-      h('div', { class: 'grow' }, [
-        h('h1', { class: 'page-title', text: '任务中心' }),
-        h('p', { class: 'page-sub', text: '任务由后台统一管理，关闭弹窗或侧边栏都不会中断。' }),
-      ]),
-    ]),
-    tabs,
-    listBox,
-  ]);
+  await reload();
+
+  // 任务在跑时进度会不断回传，这里跟着刷新；视图被替换后自动退订
+  const off = onChange(changes => {
+    if (!changes[KEYS.tasks]) return;
+    if (typeof root.isConnected === 'boolean' && !root.isConnected) {
+      off();
+      return;
+    }
+    reload().catch(() => {});
+  });
+
+  return root;
 }

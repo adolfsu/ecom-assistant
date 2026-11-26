@@ -19,6 +19,7 @@ import {
 } from '../../shared/sku.js';
 import { copyWithFeedback } from '../../shared/clipboard.js';
 import { fillDetail, fillFailure, fillRunText } from '../../shared/run-format.js';
+import { recordRun, runStatus } from '../../shared/tasks.js';
 import { MSG, toTab } from '../../../core/message-bus.js';
 import { resolveTargetTab, ensureScript, isDouyinUrl } from '../../../core/page-bridge.js';
 import { detectPlatform } from '../../../core/platform-detector.js';
@@ -129,6 +130,30 @@ export async function render(ctx, feature) {
     state.step = Math.max(0, Math.min(steps.length - 1, index));
     persist().catch(() => {});
     draw();
+  }
+
+  /* ---------- 任务记录 ---------- */
+
+  /**
+   * 按 skuFillRun 快照补记任务（同一个 runId 只对应一条，重复调用只更新）。
+   * 页面上跑完会写 skuFillRun，所以面板中途关掉、事后打开也能在任务中心看到这一条。
+   */
+  function syncTask(run) {
+    if (!run || !run.runId || !Array.isArray(run.results) || !run.results.length) return;
+    const total = Number(run.total) || run.results.length;
+    const success = run.results.filter(item => item.ok).length;
+    recordRun({
+      featureId: 'douyin.sku-fill',
+      platformId: 'douyin',
+      name: '批量填充 SKU',
+      signature: `sku:${run.runId}`,
+      status: runStatus({ running: false, total, done: run.results.length, failed: run.results.length - success }),
+      total,
+      done: run.results.length,
+      success,
+      failed: run.results.length - success,
+      at: run.at,
+    }).catch(() => {});
   }
 
   /* ---------- 渲染 ---------- */
@@ -504,9 +529,23 @@ export async function render(ctx, feature) {
       return;
     }
 
+    // 一次执行一个 runId：任务中心靠它把「开始 / 结束」认成同一条记录
+    const runId = Date.now();
+    const total = data.records.length;
+
     state.running = true;
     state.status = { text: '正在连接商品编辑页…', tone: '' };
     draw();
+    recordRun({
+      featureId: 'douyin.sku-fill',
+      platformId: 'douyin',
+      name: '批量填充 SKU',
+      signature: `sku:${runId}`,
+      status: 'running',
+      total,
+      done: 0,
+      startedAt: runId,
+    }).catch(() => {});
 
     try {
       const tab = await resolveTargetTab();
@@ -523,17 +562,19 @@ export async function render(ctx, feature) {
       await ensureScript(tab.id, { ping: MSG.PING, file: 'content.js' });
       setStatus(latestLive.status, `已连接页面，正在逐条创建 ${data.records.length} 条 SKU。请不要关闭或刷新这个商品页。`, '');
 
-      const result = await toTab(tab.id, { type: MSG.BATCH_FILL, records: data.records }, 15 * 60 * 1000);
+      const result = await toTab(tab.id, { type: MSG.BATCH_FILL, records: data.records, runId }, 15 * 60 * 1000);
       if (result && result.error) throw new Error(result.error);
       if (!result || !Array.isArray(result.results)) throw new Error('商品页没有返回批量填入结果');
 
       state.run = {
+        runId,
         at: Date.now(),
         total: data.records.length,
         results: result.results,
         tabTitle: tab.title || '',
       };
       await write(KEYS.skuRun, state.run);
+      syncTask(state.run);
 
       const success = result.results.filter(item => item.ok).length;
       state.status = {
@@ -542,6 +583,17 @@ export async function render(ctx, feature) {
       };
     } catch (error) {
       state.status = { text: `批量填入失败：${error.message}`, tone: 'error' };
+      recordRun({
+        featureId: 'douyin.sku-fill',
+        platformId: 'douyin',
+        name: '批量填充 SKU',
+        signature: `sku:${runId}`,
+        status: 'failed',
+        total,
+        done: 0,
+        startedAt: runId,
+        at: Date.now(),
+      }).catch(() => {});
     } finally {
       state.running = false;
       draw();
@@ -675,6 +727,10 @@ export async function render(ctx, feature) {
     ]);
   }
 
+  // 先认领绘制权再画第一帧：否则重新进入详情页时，这一次 draw 会被转发给
+  // 上一份已脱离文档的节点，页面就是空白（发布相似品那边踩过同一个坑）。
+  repaint = draw;
+  syncTask(state.run);
   draw();
   return root;
 }

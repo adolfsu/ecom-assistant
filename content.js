@@ -1,5 +1,5 @@
 (() => {
-  const scriptVersion = '0.9.0';
+  const scriptVersion = '0.9.1';
   if (window.__doudianSheetFillVersion === scriptVersion) return;
   window.__doudianSheetFillVersion = scriptVersion;
 
@@ -769,7 +769,7 @@
     return { row: record.sourceRow, skuName: record.skuName, ok, continue: true, results: { sku: before ? '已存在' : '已创建', ...pricing } };
   }
 
-  async function batchFill(records) {
+  async function batchFill(records, runId) {
     if (!Array.isArray(records) || !records.length) throw new Error('没有可导入的表格行');
     const required = ['skuName', 'specValue', 'specUnit', 'quantity', 'quantityUnit', 'code', 'price'];
     const missing = records.find(record => required.some(key => !String(record[key] ?? '').trim()));
@@ -804,7 +804,7 @@
     // 只读上报：侧边栏关掉时这次的回复会丢，落一份结果到 storage，下次打开还能看到。
     // 不参与填充流程，写失败也不影响本次执行。
     try {
-      chrome.storage.local.set({ skuFillRun: { at: Date.now(), total: records.length, results } });
+      chrome.storage.local.set({ skuFillRun: { runId: Number(runId) || 0, at: Date.now(), total: records.length, results } });
     } catch {
       /* 忽略 */
     }
@@ -861,7 +861,7 @@
       return;
     }
     if (message.type === 'BATCH_FILL') {
-      batchFill(message.records).then(reply).catch(error => {
+      batchFill(message.records, message.runId).then(reply).catch(error => {
         showNotice(`批量填入失败：${error.message}`, true, 12000);
         reply({ error: error.message, results: [] });
       });

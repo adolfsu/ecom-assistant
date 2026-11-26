@@ -28,7 +28,7 @@ export const KEYS = {
 };
 
 /** 清理数据时只动这些前缀，绝不 unshift 整个 storage.local */
-export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar', 'skuFillRun'];
+export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar', 'skuFillRun', 'tasks'];
 
 const local = () => chrome.storage.local;
 

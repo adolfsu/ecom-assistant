@@ -79,7 +79,7 @@ export async function render(ctx) {
       ),
       settingRow(
         '旧版面板',
-        '阶段一保留，用于回退到 0.9.0 的完整操作界面',
+        '阶段一保留，用于回退到旧版的完整操作界面',
         h('button', { class: 'btn', onclick: () => ctx.openLegacyPanel() }, ['打开', h('span', { html: icon('external') })])
       ),
     ]),

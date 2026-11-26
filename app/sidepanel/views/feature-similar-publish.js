@@ -13,6 +13,7 @@ import { parseIds, stripQuotes } from '../../shared/ids.js';
 import { columnValues } from '../../shared/sku.js';
 import { copyWithFeedback } from '../../shared/clipboard.js';
 import { similarFailure, similarRunText } from '../../shared/run-format.js';
+import { recordRun, runStatus } from '../../shared/tasks.js';
 import { MSG, toTab } from '../../../core/message-bus.js';
 import { resolveTargetTab, ensureScript, isDouyinUrl } from '../../../core/page-bridge.js';
 import { detectPlatform } from '../../../core/platform-detector.js';
@@ -22,6 +23,7 @@ const STEP_TITLES = ['输入商品 ID', '确认任务', '执行与结果'];
 
 let cache = null;
 let repaint = null;
+let offChange = null;
 
 function blankState() {
   return {
@@ -106,6 +108,37 @@ export async function render(ctx, feature) {
       percent: total ? Math.round(results.length / total * 100) : 0,
       text: state.progress?.text || '',
     };
+  }
+
+  /* ---------- 任务记录 ---------- */
+
+  /**
+   * 把运行快照补记到任务中心。
+   * 同一个 runId 只对应一条记录：开始、每次进度回传、面板重开后的恢复都调它，
+   * 结果只会被更新到最新，不会重复，也不会在没有真实运行时凭空造记录。
+   */
+  function syncTask(run) {
+    if (!run || !run.runId || !Array.isArray(run.ids) || !run.ids.length) return;
+    const results = Array.isArray(run.results) ? run.results : [];
+    const success = results.filter(item => item.ok).length;
+    const total = run.ids.length;
+    recordRun({
+      featureId: 'douyin.similar-publish',
+      platformId: 'douyin',
+      name: '批量发布相似品',
+      signature: `similar:${run.runId}`,
+      status: runStatus({
+        running: Boolean(run.running),
+        total,
+        done: results.length,
+        failed: results.length - success,
+      }),
+      total,
+      done: results.length,
+      success,
+      failed: results.length - success,
+      at: run.at,
+    }).catch(() => {});
   }
 
   /* ---------- 渲染 ---------- */
@@ -514,13 +547,23 @@ export async function render(ctx, feature) {
     ]);
   }
 
+  // 面板重开时把 storage 里的运行快照补进任务中心（关面板期间跑完的也能留下记录）
+  syncTask(state.run);
+
+  // 先认领绘制权再画第一帧。
+  // 少了这一行，重新进入详情页（例如任务开始后新标签页触发了整体重绘）时，
+  // 新实例的第一次 draw 会被当成"旧实例的回调"转发给上一份已脱离文档的节点，
+  // 于是这一份永远是空白 —— 就是「开始任务后页面变空白」的根因。
+  repaint = draw;
   draw();
 
   // 队列在页面里跑，进度/结果/日志都靠 storage 回传；只在本页可见时重绘
+  if (typeof offChange === 'function') offChange();
   const off = onChange(changes => {
     let dirty = false;
     if (changes[KEYS.similarRun]) {
       state.run = changes[KEYS.similarRun].newValue || null;
+      syncTask(state.run);
       dirty = true;
     }
     if (changes[KEYS.similarProgress]) {
@@ -538,6 +581,7 @@ export async function render(ctx, feature) {
     }
     if (state.step === 2) draw();
   });
+  offChange = off;
 
   return root;
 }

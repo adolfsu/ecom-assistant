@@ -5,7 +5,7 @@
  * 队列由列表页脚本自己驱动，每条之间等后台转发的「发布页已完成」信号。
  */
 (() => {
-  const VERSION = '0.9.0';
+  const VERSION = '0.9.1';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -331,6 +331,23 @@
     return chip ? 'chip' : '';
   }
 
+  /**
+   * 静态搜索证据：列表本来就只剩这一件商品（或本来就只有一件）时，
+   * 搜索前后表格内容一模一样，「刷新」判据必然判不出来 —— 这是误报失败的头号原因。
+   * 这时改用「列表只剩 1 行 + 该行精确命中这个 ID」作为证据：
+   * 精确命中不走兜底，命中的一定是这个商品本身，继续发布不会发错。
+   * @returns {string|false} 生效理由，未满足时返回 false
+   */
+  function staticSearchEvidence(id) {
+    const hit = findUniqueResult(id, { allowFallback: false, exactOnly: true });
+    if (!hit || !hit.el) return false;
+    const count = resultCount();
+    if (count === 1) return '页面只剩 1 件商品且这一行就是该 ID';
+    const rows = listRows();
+    if (count === null && rows.length <= 1) return `列表只有 ${rows.length} 行且就是该 ID`;
+    return false;
+  }
+
   /** 是不是筛选栏/标签里的文字（「商品ID：xxx」这种），不能当成商品行用 */
   function looksLikeFilterChip(element) {
     let node = element;
@@ -371,6 +388,8 @@
     }
 
     // ID 可能只藏在 title / aria-label 里，或页面上显示的是编码而非数字 ID
+    // （exactOnly：这类"包含即可"的匹配不能作为"当前列表就是这件商品"的证据）
+    if (options.exactOnly) return null;
     const byAttr = Array.from(document.querySelectorAll('[title], [aria-label]'))
       .filter(visible)
       .filter(element => {
@@ -754,9 +773,26 @@
     const typed = await typeSearchId(input, id);
     if (!typed) throw new Error(`没能把「${id}」写进搜索框，请手动点一下搜索框后再重新开始`);
 
-    // 依次尝试 回车 → 查询按钮 → 再回车+查询 → 搜索图标 → 失焦提交，
+    // 快速通道：列表本来就只有这一件商品时，搜它不会让表格内容发生任何变化，
+    // 「列表已刷新」判据等满 6 秒也等不到（这就是实测里列表只有 1 条时那次失败）。
+    // 先按一次回车，再用几秒确认「只剩 1 行 + 精确命中这个 ID」。
+    // 注意这不是 0.8.5 那个被删掉的捷径：那条只认"页面上存在这个 ID"，
+    // 列表还有 3 件时也会命中；这里要求列表确实只剩这一行，多件列表绝不会走这条。
+    pressKey(input, 'Enter', 13);
+    let state = await waitFor(() => staticSearchEvidence(id), 4000, 300);
+    if (state) logStep(`列表本来就只有这一件商品（${state}），按搜索生效处理`);
+
+    // 否则依次尝试 回车 → 查询按钮 → 再回车+查询 → 搜索图标 → 失焦提交，
     // 直到列表稳定刷新才算搜索成功；绝不假设"已经搜过"
-    const state = await triggerSearch(input, id, beforePrint);
+    if (!state) state = await triggerSearch(input, id, beforePrint);
+    if (!state) {
+      // 动作链跑完表格还是没变，最后再确认一次静态证据（可能是刷新期间短暂空表导致快速通道没赶上）
+      const staticReason = staticSearchEvidence(id);
+      if (staticReason) {
+        state = 'static';
+        logStep(`列表内容与搜索前一致，但${staticReason}，按搜索生效处理`);
+      }
+    }
     logStep(`搜索判定：${state || '未生效'}；当前指纹（前 60 字）：${listPrint().slice(0, 60) || '（空）'}`);
     if (!state) {
       throw new Error(`输入「${id}」后商品列表没有刷新，搜索没有生效（可手动点一次「查询」确认页面正常）`);
@@ -1117,7 +1153,8 @@
 
   /* ---------------- 队列（列表页驱动） ---------------- */
 
-  const runtime = { running: false, ids: [], index: 0, results: [], pendingSignal: null, earlySignal: null };
+  // runId 用来让侧边栏把多次「发布相似品」区分成不同任务记录，不参与执行逻辑
+  const runtime = { running: false, ids: [], index: 0, results: [], pendingSignal: null, earlySignal: null, runId: 0 };
 
   function waitSignal() {
     if (runtime.earlySignal) {
@@ -1145,6 +1182,7 @@
           ids: runtime.ids,
           index: runtime.index,
           results: runtime.results,
+          runId: runtime.runId,
           at: Date.now()
         }
       });
@@ -1160,6 +1198,7 @@
     runtime.results = [];
     runtime.index = 0;
     runtime.earlySignal = null;
+    runtime.runId = Date.now();
     persist();
     try {
       chrome.runtime.sendMessage({ type: 'SIMILAR_REGISTER_LIST' });
