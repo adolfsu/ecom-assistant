@@ -7,5 +7,6 @@
 import './douyin/platform.js';
 import './douyin/features/sku-fill.js';
 import './douyin/features/similar-publish.js';
+import './douyin/features/copy-variants.js';
 
 export const REGISTRY_READY = true;

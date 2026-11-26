@@ -5,7 +5,7 @@
  * 队列由列表页脚本自己驱动，每条之间等后台转发的「发布页已完成」信号。
  */
 (() => {
-  const VERSION = '0.9.1';
+  const VERSION = '0.9.2';
   if (window.__doudianSimilar) return;
   window.__doudianSimilar = VERSION;
 
@@ -149,7 +149,9 @@
 
   function report(text, extra = {}) {
     try {
-      chrome.storage.local.set({ similarProgress: { text, at: Date.now(), ...extra } });
+      // 两个功能各有自己的面板，进度不要互相覆盖
+      const key = runtime.mode === 'variant' ? 'variantProgress' : 'similarProgress';
+      chrome.storage.local.set({ [key]: { text, at: Date.now(), ...extra } });
     } catch {
       /* 扩展被重载时会失败，忽略 */
     }
@@ -164,7 +166,12 @@
     lastLogText = text;
     lastLogAt = now;
     try {
-      const pending = chrome.runtime.sendMessage({ type: 'SIMILAR_LOG', text: `[列表页] ${text}` });
+      const page = /\/(create|edit)(\?|$|\/)/.test(location.pathname) ? '发布页' : '列表页';
+      const pending = chrome.runtime.sendMessage({
+        type: 'SIMILAR_LOG',
+        text: `[${page}] ${text}`,
+        channel: runtime.mode === 'variant' ? 'variant' : ''
+      });
       if (pending && pending.catch) pending.catch(() => {});
     } catch {
       /* 扩展被重载时忽略 */
@@ -753,8 +760,11 @@
     return { ok: false, gone: false };
   }
 
-  async function searchAndOpenSimilar(id, index, total) {
-    const label = `第 ${index + 1}/${total} 条：`;
+  /**
+   * 搜索并定位某个商品，返回 `{ el, fallback }`。
+   * 变体模式只调用一次；批量发布相似品每条调用一次。
+   */
+  async function searchSource(id, label) {
     const input = await waitFor(findSearchInput, 15000, 300);
     if (!input) {
       throw new Error('没找到商品列表的搜索框，请确认当前页是「商品管理 → 商品列表」');
@@ -830,6 +840,14 @@
       throw new Error(`搜索后只看到一条结果，但页面上找不到「${id}」的痕迹，无法确认是不是这条商品，已跳过（建议在列表显示「商品ID」列）`);
     }
     if (!found || !found.el) throw new Error(`搜索「${id}」后没在列表里找到该商品，可能还在加载或 ID 有误`);
+    return found;
+  }
+
+  /**
+   * 在已定位的商品行上点「发布相似品」→ 确认 → 等新标签页被接管。
+   * 拆出来是给变体模式复用：那里只搜一次源商品，之后每一轮都拿同一行去点。
+   */
+  async function openSimilarOnRow(found, label) {
     if (found.fallback) report(`${label}页面上没有直接显示该 ID，按「共 1 件商品」的唯一结果继续…`);
     logStep(`结果定位方式：${found.fallback ? '共 1 件商品兜底' : 'ID 精确命中'}`);
 
@@ -878,7 +896,13 @@
     // 登记不上就干脆别点：否则会开出一个没人接管的发布页，整条流程只能干等。
     let registered = false;
     try {
-      const ack = await chrome.runtime.sendMessage({ type: 'SIMILAR_OPENED', id: String(id) });
+      const ack = await chrome.runtime.sendMessage({
+        type: 'SIMILAR_OPENED',
+        id: String(id),
+        // 发布页要据此决定「填标题 + 换主图」：不能靠 storage 里有没有 variantPending，
+        // 否则上一批变体留下的残值会污染下一批普通的发布相似品
+        variant: runtime.mode === 'variant'
+      });
       registered = Boolean(ack && ack.ok);
     } catch {
       registered = false;
@@ -957,6 +981,390 @@
     }
     report(`${label}已打开发布页，自动发布中…`);
     return { opened: true };
+  }
+
+  /** 批量发布相似品的单条流程：搜一次 → 点开 → 等接管 */
+  async function searchAndOpenSimilar(id, index, total) {
+    const label = `第 ${index + 1}/${total} 条：`;
+    const found = await searchSource(id, label);
+    return openSimilarOnRow(found, label);
+  }
+
+  /* ---------------- 发布页：填标题 / 换主图（变体模式） ---------------- */
+
+  /**
+   * 读列表页写下的「这一条用哪个标题、哪张图」。
+   * 队列在列表页，发布页是另一个标签页，只能靠 storage 交接。
+   */
+  function readVariantPending() {
+    return new Promise(resolve => {
+      try {
+        chrome.storage.local.get(['variantPending'], data => {
+          resolve(data && data.variantPending ? data.variantPending : null);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  /** 标题输入框：优先 placeholder/aria-label 写了「标题」的，其次看附近文案 */
+  function findTitleField() {
+    const fields = allVisible('input, textarea')
+      .filter(element => !element.disabled && !element.readOnly)
+      .filter(element => {
+        const type = String(element.type || '').toLowerCase();
+        return element.tagName === 'TEXTAREA' || type === '' || type === 'text';
+      });
+
+    const label = element => `${element.placeholder || ''} ${element.getAttribute('aria-label') || ''}`;
+    // 先找明确写「商品标题」的，避免命中「卖点标题」「短标题」这类别的输入框
+    const exact = fields.find(element => /商品标题/.test(label(element)));
+    if (exact) return exact;
+    const loose = fields.find(element => /标题/.test(label(element)));
+    if (loose) return loose;
+
+    // 标题两个字的 label 常在同一行左侧，往上找四层看有没有「商品标题」
+    for (const element of fields) {
+      let node = element.parentElement;
+      for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+        const text = norm(node.textContent || '');
+        if (text.includes('商品标题')) return element;
+        if (text.length > 240) break;
+      }
+    }
+
+    // 最后兜底：整页最靠上的、带 maxlength 的长文本框
+    return fields
+      .filter(element => Number(element.maxLength) > 0 && Number(element.maxLength) <= 200)
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0] || null;
+  }
+
+  async function fillPublishTitle(title) {
+    const value = String(title || '').trim();
+    if (!value) throw new Error('这一条没有标题');
+
+    const field = await waitFor(findTitleField, 30000, 500);
+    if (!field) throw new Error('发布页没找到「商品标题」输入框');
+
+    const max = Number(field.maxLength);
+    if (max > 0 && value.length > max) {
+      throw new Error(`标题 ${value.length} 字，超过输入框上限 ${max} 字，已停止这一条`);
+    }
+
+    field.focus();
+    if (typeof field.select === 'function') field.select();
+    setNativeValue(field, value);
+    await sleep(200);
+
+    let actual = String(field.value || '').trim();
+    if (actual !== value) {
+      // 受控组件偶尔吞掉一次性赋值，改走「插入文本」路径
+      try {
+        if (typeof field.select === 'function') field.select();
+        document.execCommand('insertText', false, value);
+      } catch {
+        /* 忽略 */
+      }
+      await sleep(250);
+      actual = String(field.value || '').trim();
+    }
+
+    if (actual !== value) {
+      throw new Error(`标题没写进去：期望 ${value.length} 字，实际 ${actual.length} 字`);
+    }
+    logStep(`标题已填入（${actual.length} 字）`);
+    return actual;
+  }
+
+  /** 主图区块：从「*主图」标题往上找，直到包含「导入抖店图库 / 上传图片」的容器 */
+  function mainImageArea() {
+    const heads = allVisible('div, span, label, h3, h4, p')
+      .filter(element => /^[*＊]?\s*主图$/.test(norm(element.textContent)))
+      .filter(element => element.getBoundingClientRect().height <= 44);
+    for (const head of heads) {
+      let node = head.parentElement;
+      for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+        if (/导入抖店图库|上传图片|从主图填入/.test(node.textContent || '')) return node;
+      }
+    }
+    return null;
+  }
+
+  /** 主图区里的图片，按「先上后左」排序，第一张就是主图第一张 */
+  function mainImageList() {
+    const area = mainImageArea();
+    if (!area) return [];
+    return Array.from(area.querySelectorAll('img'))
+      .filter(visible)
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 56 || rect.height < 56) return false;
+        const src = String(element.currentSrc || element.src || '');
+        return /ecombdimg|ecom-shop-material|\.(jpe?g|png|webp)/i.test(src);
+      })
+      .sort((left, right) => {
+        const a = left.getBoundingClientRect();
+        const b = right.getBoundingClientRect();
+        if (Math.abs(a.top - b.top) > 14) return a.top - b.top;
+        return a.left - b.left;
+      });
+  }
+
+  /** 对图片及其三层祖先都派发 hover：浮层可能绑在父级容器上，位置不固定 */
+  function hoverAround(image) {
+    let node = image;
+    for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      hoverElement(node);
+    }
+  }
+
+  /** hover 的目标：含「编辑 / 删除」的图容器；找不到就退回 img 的父级 */
+  function firstMainImageBox(image) {
+    let node = image;
+    for (let depth = 0; node && depth < 3; depth++, node = node.parentElement) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width >= 60 && rect.height >= 60 && /编辑|删除/.test(node.textContent || '')) return node;
+    }
+    return (image && image.parentElement) || image;
+  }
+
+  /**
+   * 合成 hover：四个入口（智能创作/好图复刻/本地替换/图库替换）是 hover 才渲染的。
+   * mouseenter 不冒泡，必须直接派发到目标元素；React 的 onMouseEnter 实际监听 mouseover。
+   */
+  function hoverElement(element) {
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: Math.round(rect.left + rect.width / 2),
+      clientY: Math.round(rect.top + rect.height / 2)
+    };
+    for (const type of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'mousemove']) {
+      try {
+        element.dispatchEvent(new MouseEvent(type, init));
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }
+
+  /** 悬停菜单里的「图库替换」，取最内层那个（外层容器文本可能也含这四个字） */
+  function findLibraryReplace() {
+    return allVisible('button, [role="button"], div, span, a')
+      .filter(element => compact(element.textContent) === '图库替换')
+      .sort((left, right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] || null;
+  }
+
+  function findLibrarySearch(root = document) {
+    return Array.from(root.querySelectorAll('input'))
+      .filter(visible)
+      .find(element => /查询图片名称|图片名称|图片名/.test(
+        `${element.placeholder || ''} ${element.getAttribute('aria-label') || ''}`
+      )) || null;
+  }
+
+  /** 素材库弹层：从「查询图片名称」的输入框往上找 modal/dialog 容器 */
+  function findLibraryDialog() {
+    const input = findLibrarySearch();
+    if (!input) return null;
+    let node = input;
+    for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+      const cls = String(node.className || '');
+      const rect = node.getBoundingClientRect();
+      if (/modal|dialog|drawer|popup/i.test(cls) && rect.width > 300 && rect.height > 200) return node;
+    }
+    return document.body;
+  }
+
+  /** 素材网格里的卡片 */
+  function libraryCards(dialog) {
+    if (!dialog) return [];
+    let best = null;
+    for (const grid of Array.from(dialog.querySelectorAll('[class*="grid" i]'))) {
+      const count = Array.from(grid.children)
+        .filter(child => child.querySelector && child.querySelector('img')).length;
+      if (count && (!best || count > best.count)) best = { grid, count };
+    }
+    if (best) {
+      return Array.from(best.grid.children).filter(child => child.querySelector && child.querySelector('img'));
+    }
+    // 没有 grid 容器时，退回「文件名元素的祖父级」
+    const names = Array.from(dialog.querySelectorAll('[class*="fileName" i]'));
+    if (!names.length) return [];
+    const parent = names[0].parentElement && names[0].parentElement.parentElement;
+    return parent ? Array.from(parent.children).filter(child => child.querySelector && child.querySelector('img')) : [];
+  }
+
+  function cardName(card) {
+    if (!card) return '';
+    const node = card.querySelector('[class*="fileName" i]') || card.querySelector('[class*="name" i]');
+    return norm(node ? node.textContent : '');
+  }
+
+  function stripExtName(name) {
+    return String(name || '').replace(/\.(jpe?g|png|webp|gif|bmp)$/i, '');
+  }
+
+  /** 卡片名与目标名是否算同一张（全名相等 / 卡片名包含目标 / 去扩展名后包含） */
+  function nameMatches(cardText, imageName) {
+    const text = norm(cardText).toLowerCase();
+    const full = norm(imageName).toLowerCase();
+    const body = norm(stripExtName(imageName)).toLowerCase();
+    if (!text || !full) return false;
+
+    // 卡片文本里常夹着尺寸（「1.jpg」旁边还有 800*800），先抠出文件名再逐字比较。
+    // 不用「包含」：搜 1.jpg 时 11.jpg 也包含它，会选错图。
+    const candidates = [text];
+    const found = text.match(/[^\s/\\]+\.(?:jpe?g|png|webp|gif|bmp)/i);
+    if (found) candidates.push(found[0]);
+
+    return candidates.some(value =>
+      value === full || value === body || stripExtName(value) === body);
+  }
+
+  /** 选中一张素材：先点卡片（用户也是这么点的），没勾上再补点 checkbox */
+  function selectLibraryCard(card) {
+    const box = card.querySelector('input[type="checkbox"]');
+    if (box && box.checked) return true;
+    try {
+      mouseClick(card);
+    } catch {
+      /* 忽略 */
+    }
+    if (box && !box.checked) {
+      try {
+        mouseClick(box);
+      } catch {
+        try {
+          box.click();
+        } catch {
+          /* 忽略 */
+        }
+      }
+    }
+    return box ? Boolean(box.checked) : null;
+  }
+
+  function findLibraryConfirm(dialog) {
+    return Array.from(dialog.querySelectorAll('button, [role="button"]'))
+      .filter(visible)
+      .filter(element => /^(确定|确认|使用|选好了|完成|添加)$/.test(norm(element.textContent)))
+      .sort((left, right) => right.getBoundingClientRect().top - left.getBoundingClientRect().top)[0] || null;
+  }
+
+  /**
+   * 用「图库替换」把主图第一张换成素材库里指定文件名的图。
+   * 只换第一张：悬停菜单挂在第一张图上，选完素材库点确定，平台自己替换那一格。
+   */
+  async function replaceMainImageViaLibrary(imageName) {
+    const before = mainImageList()[0];
+    if (!before) {
+      throw new Error('发布页没找到主图第一张（没认出主图区块，或图片还没加载完）');
+    }
+    const beforeSrc = String(before.currentSrc || before.src || '');
+
+    hoverAround(before);
+    let button = await waitFor(findLibraryReplace, 4000, 250);
+    if (!button) {
+      // 淡入动画期间按钮可能还没挂上，等一拍再 hover 一次
+      await sleep(400);
+      hoverAround(before);
+      button = await waitFor(findLibraryReplace, 5000, 250);
+    }
+    if (!button) {
+      const seen = allVisible('button, [role="button"], div, span')
+        .filter(element => /替换|图库|复刻/.test(norm(element.textContent)))
+        .map(element => norm(element.textContent).slice(0, 10))
+        .slice(0, 8);
+      throw new Error(`主图悬停菜单里没找到「图库替换」（看到：${seen.join('、') || '无'}）`);
+    }
+    mouseClick(button);
+    logStep('已点击「图库替换」');
+
+    const dialog = await waitFor(findLibraryDialog, 15000, 400);
+    if (!dialog) throw new Error('点击「图库替换」后没有出现素材库弹窗');
+    const input = findLibrarySearch(dialog);
+    if (!input) throw new Error('素材库弹窗里没有「查询图片名称」搜索框');
+
+    logStep(`素材库已打开，搜索「${imageName}」`);
+    input.focus();
+    setNativeValue(input, imageName);
+    pressKey(input, 'Enter', 13);
+
+    const findFirstMatch = () => {
+      const list = libraryCards(dialog);
+      if (!list.length) return null;
+      const first = list[0];
+      return nameMatches(cardName(first), imageName) ? first : null;
+    };
+
+    let target = await waitFor(findFirstMatch, 12000, 400);
+    if (!target) {
+      // 有的素材库不认回车，只认旁边的「查询」按钮
+      const query = Array.from(dialog.querySelectorAll('button, [role="button"], span, div'))
+        .filter(visible)
+        .filter(element => /^(查询|搜索)$/.test(norm(element.textContent)))[0];
+      if (query) {
+        logStep('素材库没有响应回车，补点一次「查询」');
+        mouseClick(query);
+        target = await waitFor(findFirstMatch, 8000, 400);
+      }
+    }
+
+    if (!target) {
+      const seen = libraryCards(dialog).slice(0, 3).map(card => cardName(card)).filter(Boolean);
+      try {
+        const cancel = Array.from(dialog.querySelectorAll('button, [role="button"]'))
+          .filter(visible)
+          .filter(element => /^(取消|关闭)$/.test(norm(element.textContent)))[0];
+        if (cancel) mouseClick(cancel);
+      } catch {
+        /* 忽略 */
+      }
+      throw new Error(seen.length
+        ? `素材库里没搜到「${imageName}」（当前前三个：${seen.join('、')}），请确认左侧已选中目标文件夹`
+        : `素材库里没搜到「${imageName}」，请确认左侧已选中目标文件夹`);
+    }
+
+    const checked = selectLibraryCard(target);
+    await sleep(350);
+    logStep(`已选中「${cardName(target) || imageName}」，勾选：${checked === null ? '无法判定' : (checked ? '已勾选' : '未勾选')}`);
+
+    const confirm = findLibraryConfirm(dialog);
+    if (!confirm) throw new Error('素材库弹窗里没找到「确定」按钮');
+    mouseClick(confirm);
+    logStep('已点「确定」，等待主图更新…');
+
+    await waitFor(() => !findLibrarySearch(), 10000, 300);
+
+    const after = await waitFor(() => {
+      const image = mainImageList()[0];
+      if (!image) return null;
+      const src = String(image.currentSrc || image.src || '');
+      return src && src !== beforeSrc ? image : null;
+    }, 15000, 400);
+
+    if (!after) throw new Error('点了「确定」但主图第一张没有更新（可能没选中素材，或平台要求先裁剪）');
+    logStep('主图第一张已更新');
+  }
+
+  /** 变体模式在发布页的前置动作；不在变体任务里时直接返回 null */
+  async function applyVariant() {
+    const pending = await readVariantPending();
+    if (!pending || !pending.title) {
+      throw new Error('变体数据没读到（列表页没写进 storage），已停止这一条，避免发出没改标题的商品');
+    }
+    const no = Number(pending.index) + 1;
+    report(`变体第 ${no} 条：填写标题…`);
+    await fillPublishTitle(pending.title);
+    report(`变体第 ${no} 条：替换主图「${pending.image}」…`);
+    await replaceMainImageViaLibrary(pending.image);
+    return pending;
   }
 
   /* ---------------- 发布页：点击发布并等待成功 ---------------- */
@@ -1154,7 +1562,19 @@
   /* ---------------- 队列（列表页驱动） ---------------- */
 
   // runId 用来让侧边栏把多次「发布相似品」区分成不同任务记录，不参与执行逻辑
-  const runtime = { running: false, ids: [], index: 0, results: [], pendingSignal: null, earlySignal: null, runId: 0 };
+  const runtime = {
+    running: false,
+    // 'ids' = 每个 ID 各搜一次（批量发布相似品）；'variant' = 同一个 ID 连点多次（批量复制变体）
+    mode: 'ids',
+    ids: [],
+    variants: [],
+    index: 0,
+    results: [],
+    pendingSignal: null,
+    earlySignal: null,
+    runId: 0,
+    error: ''
+  };
 
   function waitSignal() {
     if (runtime.earlySignal) {
@@ -1176,6 +1596,21 @@
 
   function persist() {
     try {
+      if (runtime.mode === 'variant') {
+        chrome.storage.local.set({
+          variantRun: {
+            running: runtime.running,
+            runId: runtime.runId,
+            sourceId: runtime.ids[0] || '',
+            items: runtime.variants,
+            index: runtime.index,
+            results: runtime.results,
+            error: runtime.error || '',
+            at: Date.now()
+          }
+        });
+        return;
+      }
       chrome.storage.local.set({
         similarRun: {
           running: runtime.running,
@@ -1191,8 +1626,193 @@
     }
   }
 
+  /* ---------------- 变体队列：搜一次源商品，连点 N 次 ---------------- */
+
+  /** 把「这一条用哪个标题、哪张图」写到 storage，发布页接管后读它 */
+  function writeVariantPending(index) {
+    const item = runtime.variants[index] || {};
+    return new Promise(resolve => {
+      try {
+        chrome.storage.local.set({
+          variantPending: {
+            runId: runtime.runId,
+            index,
+            title: item.title || '',
+            image: item.image || '',
+            at: Date.now()
+          }
+        }, () => resolve());
+      } catch {
+        resolve();
+      }
+    });
+  }
+
+  async function runVariants(sourceId, items) {
+    if (runtime.running) return { ok: false, error: '已经在运行中' };
+
+    runtime.mode = 'variant';
+    runtime.running = true;
+    runtime.ids = [String(sourceId)];
+    runtime.variants = (Array.isArray(items) ? items : [])
+      .map((item, index) => ({
+        no: Number(item && item.no) || index + 1,
+        title: String(item && item.title || '').trim(),
+        image: String(item && item.image || '').trim()
+      }))
+      .filter(item => item.title);
+    runtime.results = [];
+    runtime.index = 0;
+    runtime.earlySignal = null;
+    runtime.error = '';
+    runtime.runId = Date.now();
+
+    const total = runtime.variants.length;
+    if (!total) {
+      runtime.running = false;
+      return { ok: false, error: '没有可执行的变体（标题全为空）' };
+    }
+
+    previousIds = [];
+    persist();
+    try {
+      chrome.runtime.sendMessage({ type: 'SIMILAR_REGISTER_LIST' });
+    } catch {
+      /* 忽略 */
+    }
+
+    let consecutiveFailures = 0;
+    let row = null;
+
+    try {
+      report(`变体：搜索源商品 ${sourceId}（整批只搜这一次）…`);
+      row = await searchSource(String(sourceId), '源商品：');
+      logStep('源商品已定位，开始逐条复制');
+
+      for (let index = 0; index < total; index++) {
+        if (!runtime.running) break;
+        runtime.index = index;
+        runtime.earlySignal = null;
+        // 变体是同一个 ID 反复出现，任何「排除上一条」的逻辑都会把它排掉
+        previousIds = [];
+        persist();
+
+        const item = runtime.variants[index];
+        const fail = (reason, issues) => {
+          runtime.results.push({
+            no: item.no,
+            title: item.title,
+            image: item.image,
+            ok: false,
+            reason: reason || '',
+            issues: issues || [],
+            at: Date.now()
+          });
+          persist();
+        };
+
+        // 上一条发布后列表会刷新，旧引用随时脱离文档
+        if (!row || !row.el || !row.el.isConnected) {
+          row = await waitFor(() => findUniqueResult(String(sourceId), { allowFallback: true }), 15000, 500);
+        }
+        if (!row || !row.el) {
+          // 列表被刷新或翻页后旧引用会失效，这里补搜一次，而不是直接判失败。
+          // 正常流程里整批只搜一次，走不到这里。
+          try {
+            logStep('源商品那一行已不在页面上，重新搜索一次');
+            row = await searchSource(String(sourceId), `变体 ${index + 1}/${total}：`);
+          } catch (error) {
+            const reason = `列表里找不到源商品那一行了（${error.message}）`;
+            fail(reason);
+            report(`变体 ${index + 1}/${total}：${reason}`, { index, total });
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 3) {
+              runtime.error = reason;
+              break;
+            }
+            await sleep(1200);
+            continue;
+          }
+        }
+
+        await writeVariantPending(index);
+
+        try {
+          await openSimilarOnRow(row, `变体 ${index + 1}/${total}：`);
+        } catch (error) {
+          fail(error.message);
+          report(`变体 ${index + 1}/${total}：${error.message}，跳过`, { index, total });
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 3) {
+            runtime.error = `连续 ${consecutiveFailures} 条失败：${error.message}`;
+            break;
+          }
+          await sleep(1200);
+          continue;
+        }
+
+        report(`变体 ${index + 1}/${total}：等待发布页填标题、换主图并提交…`, { index, total });
+        const signal = await waitSignal();
+        if (signal.stopped) break;
+        if (signal.timeout) {
+          fail('等待发布页超时（发布页可能卡在加载或替换主图）');
+          report(`变体 ${index + 1}/${total}：等待发布页超时，跳过`, { index, total });
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 3) {
+            runtime.error = '连续 3 条等待发布页超时';
+            break;
+          }
+          continue;
+        }
+
+        if (signal.ok) {
+          runtime.results.push({
+            no: item.no,
+            title: item.title,
+            image: item.image,
+            ok: true,
+            reason: '',
+            issues: [],
+            at: Date.now()
+          });
+          consecutiveFailures = 0;
+          persist();
+          report(`变体 ${index + 1}/${total}：已发布`, { index, total });
+          await sleep(1500);
+          continue;
+        }
+
+        fail(signal.reason, signal.issues);
+        consecutiveFailures += 1;
+        report(`变体 ${index + 1}/${total} 失败：${signal.reason || '原因未知'}`, { index, total });
+        if (consecutiveFailures >= 3) {
+          runtime.error = `连续 ${consecutiveFailures} 条发布失败：${signal.reason || '原因未知'}`;
+          break;
+        }
+        await sleep(1200);
+      }
+    } catch (error) {
+      // 搜源商品就失败：整批一条都跑不了，单独记错误，不伪造逐条结果
+      runtime.error = error.message;
+      logStep(`变体整批中止：${error.message}`);
+    }
+
+    runtime.running = false;
+    const success = runtime.results.filter(item => item.ok).length;
+    report(
+      `变体已结束：成功 ${success} / 共 ${total} 条${runtime.results.length > success ? `，失败 ${runtime.results.length - success}` : ''}`
+        + (runtime.error ? `（${runtime.error}）` : ''),
+      { done: true, ok: success, total }
+    );
+    persist();
+    return { ok: true };
+  }
+
   async function runQueue(ids) {
     if (runtime.running) return { ok: false, error: '已经在运行中' };
+    runtime.mode = 'ids';
+    runtime.variants = [];
+    runtime.error = '';
     runtime.running = true;
     runtime.ids = ids.slice();
     runtime.results = [];
@@ -1284,7 +1904,11 @@
       return;
     }
     if (message.type === 'SIMILAR_PUBLISH') {
-      publishNow()
+      // 先切模式：applyVariant / publishNow 里的 report 与 logStep 都按它分流，
+      // 不切的话发布页的进度和日志会写到「批量发布相似品」那边，变体面板里一片空白
+      if (message.variant) runtime.mode = 'variant';
+      (message.variant ? applyVariant() : Promise.resolve(null))
+        .then(() => publishNow())
         .then(result => reply(result))
         .catch(error => {
           // 失败也要回报，否则后台一直等，整条流程会卡住；把校验提示一起带回去
@@ -1293,7 +1917,9 @@
               type: 'SIMILAR_PUBLISH_DONE',
               ok: false,
               reason: error.message,
-              issues: Array.isArray(error.issues) ? error.issues : []
+              issues: Array.isArray(error.issues) ? error.issues : [],
+              // 变体一次会开十几二十个发布页，失败页不能全留着
+              variant: runtime.mode === 'variant'
             });
           } catch {
             /* 忽略 */
@@ -1301,6 +1927,20 @@
           reply({ ok: false, error: error.message });
         });
       return true;
+    }
+    if (message.type === 'VARIANT_RUN') {
+      runVariants(message.sourceId, message.items);
+      reply({ ok: true, started: true });
+      return;
+    }
+    if (message.type === 'VARIANT_STOP') {
+      runtime.running = false;
+      runtime.earlySignal = { stopped: true };
+      if (runtime.pendingSignal) runtime.pendingSignal({ stopped: true });
+      report('已手动停止', { stopped: true });
+      persist();
+      reply({ ok: true });
+      return;
     }
     if (message.type === 'SIMILAR_RUN') {
       runQueue(Array.isArray(message.ids) ? message.ids : []);

@@ -8,8 +8,10 @@
 
 import { render as skuFill } from './feature-sku-fill.js';
 import { render as similarPublish } from './feature-similar-publish.js';
+import { render as copyVariants } from './feature-copy-variants.js';
 
 export const featureViews = {
   'sku-fill': skuFill,
   'similar-publish': similarPublish,
+  'copy-variants': copyVariants,
 };

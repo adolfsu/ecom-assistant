@@ -11,6 +11,7 @@ export const KEYS = {
   recent: 'ui.recent',
   pendingFeature: 'ui.pendingFeature',
   panelState: 'ui.panelState',
+  probeResult: 'ui.probeResult',
   tasks: 'tasks',
 
   // 批量填充 SKU：沿用旧面板的键名，两个入口看到的是同一份数据
@@ -25,10 +26,20 @@ export const KEYS = {
   similarProgress: 'similarProgress',
   similarDebug: 'similarDebug',
   similarListTabId: 'similarListTabId',
+
+  // 批量复制变体：源商品、标题与图片名由侧边栏写，运行快照由 similar.js 写
+  variantSource: 'variantSource',
+  variantTitles: 'variantTitles',
+  variantImages: 'variantNames',
+  variantState: 'variantState',
+  variantRun: 'variantRun',
+  variantProgress: 'variantProgress',
+  variantDebug: 'variantDebug',
+  variantPending: 'variantPending',
 };
 
 /** 清理数据时只动这些前缀，绝不 unshift 整个 storage.local */
-export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar', 'skuFillRun', 'tasks'];
+export const OWNED_PREFIXES = ['ui.', 'doudianBatch', 'similar', 'skuFillRun', 'variant', 'tasks'];
 
 const local = () => chrome.storage.local;
 

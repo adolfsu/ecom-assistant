@@ -1,5 +1,5 @@
 (() => {
-  const scriptVersion = '0.9.1';
+  const scriptVersion = '0.9.2';
   if (window.__doudianSheetFillVersion === scriptVersion) return;
   window.__doudianSheetFillVersion = scriptVersion;
 

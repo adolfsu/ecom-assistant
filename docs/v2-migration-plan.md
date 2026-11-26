@@ -250,3 +250,17 @@ platforms/
 1. 统一任务模型 + 持久化（重启后标记 `interrupted`），把轻量记录换成后台任务管理器；
 2. 执行器注册（`start / pause / resume / cancel / getStatus`），发布相似品优先接；
 3. 若要做到「SKU 填充可暂停/可续跑」，需要给 `content.js` 增加进度上报与停止检查点（只加不改填充流程）。
+
+## 十五、阶段一追加：第三个功能（批量复制变体）
+
+用户提出「同一个链接复制相似品、逐条换标题和主图」，评估见 `feature-title-image-assessment.md`。
+它没有另起一条执行链路，而是复用现有的「发布相似品」跨标签页协议，只在两处扩展：
+
+- **列表页**：新增 `runVariants`，把原来的 `searchAndOpenSimilar` 拆成 `searchSource`（搜索并定位一行）
+  与 `openSimilarOnRow`（点按钮 → 确认 → 等接管）。变体队列只调用一次 `searchSource`，之后每轮复用那一行。
+- **发布页**：`SIMILAR_PUBLISH` 增加 `variant` 标记（由后台从 pending 带过来），收到后先填标题、
+  用「图库替换」换主图第一张，再执行原有的 `publishNow`。
+
+新增共享模块 `app/shared/images.js`（图片名过滤/自然排序/标题配对），
+新增视图 `views/feature-copy-variants.js`（四步向导），新增测试 `tests/check-variants.js`。
+功能清单一律来自注册中心，公共导航/筛选/任务中心零改动。

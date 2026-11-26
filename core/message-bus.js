@@ -23,6 +23,10 @@ export const MSG = {
   SIMILAR_LOG: 'SIMILAR_LOG',
   SIMILAR_REGISTER_LIST: 'SIMILAR_REGISTER_LIST',
   SIMILAR_GRAB_URL: 'SIMILAR_GRAB_URL',
+  // 批量复制变体（同一个 similar.js，走变体队列分支）
+  VARIANT_RUN: 'VARIANT_RUN',
+  VARIANT_STOP: 'VARIANT_STOP',
+  VARIANT_QUICK_CHECK: 'VARIANT_QUICK_CHECK',
 };
 
 export class MessageError extends Error {

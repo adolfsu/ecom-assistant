@@ -62,3 +62,25 @@ export function similarRunText(run, onlyFailed = false) {
   }
   return lines.join('\n');
 }
+
+/* ---------------- 批量复制变体 ---------------- */
+
+/** 失败原因：采集到的校验提示优先，其次 reason */
+export function variantFailure(item) {
+  const issues = Array.isArray(item?.issues) ? item.issues.filter(Boolean) : [];
+  const text = issues.length ? issues.join('；') : String(item?.reason || '').trim();
+  return text || '原因未记录';
+}
+
+export function variantRunText(run, onlyFailed = false) {
+  const results = Array.isArray(run?.results) ? run.results : [];
+  const rows = results.filter(item => !onlyFailed || !item.ok);
+  if (!rows.length) return '';
+  const lines = [onlyFailed ? '序号\t标题\t图片\t失败原因' : '序号\t标题\t图片\t状态\t失败原因'];
+  for (const item of rows) {
+    lines.push(onlyFailed
+      ? `${item.no}\t${item.title || ''}\t${item.image || ''}\t${variantFailure(item)}`
+      : `${item.no}\t${item.title || ''}\t${item.image || ''}\t${item.ok ? '成功' : '失败'}\t${item.ok ? '' : variantFailure(item)}`);
+  }
+  return lines.join('\n');
+}

@@ -42,14 +42,16 @@ const OPEN_HOOK = () => {
 };
 
 /** 记录一条运行日志，面板里可以查看，便于定位“卡在哪一步” */
-function log(text) {
+function log(text, channel = '') {
   const stamp = new Date().toTimeString().slice(0, 8);
-  chrome.storage.local.get([LOG_KEY])
+  // 两个功能各看各的日志，别混在一起
+  const key = channel === 'variant' ? 'variantDebug' : LOG_KEY;
+  chrome.storage.local.get([key])
     .then(data => {
-      const list = Array.isArray(data[LOG_KEY]) ? data[LOG_KEY] : [];
+      const list = Array.isArray(data[key]) ? data[key] : [];
       list.push(`${stamp} ${text}`);
       // 避免日志无限增长：超过 60 条只保留最近 60 条
-      return chrome.storage.local.set({ [LOG_KEY]: list.slice(-60) });
+      return chrome.storage.local.set({ [key]: list.slice(-60) });
     })
     .catch(() => {});
 }
@@ -86,7 +88,10 @@ async function ensureSimilar(tabId) {
 async function triggerPublish(tabId, attempt = 0) {
   const ready = await ensureSimilar(tabId);
   if (ready) {
-    const result = await sendToTab(tabId, { type: 'SIMILAR_PUBLISH' });
+    // 变体任务要在发布前先填标题、换主图；普通相似品没有这一步
+    const data = await chrome.storage.local.get([PENDING_KEY]);
+    const pending = data[PENDING_KEY] || {};
+    const result = await sendToTab(tabId, { type: 'SIMILAR_PUBLISH', variant: Boolean(pending.variant) });
     if (result && result.ok) {
       log(`标签 ${tabId} 已开始点击「发布商品」`);
       return;
@@ -153,6 +158,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       await chrome.storage.local.set({
         [PENDING_KEY]: {
           id: message.id || '',
+          variant: Boolean(message.variant),
           at: Date.now(),
           tabId: null,
           sent: false,
@@ -214,7 +220,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 
   if (message.type === 'SIMILAR_LOG') {
     // 页面脚本的步骤日志，和后台日志写在同一处，面板里一起看
-    log(String(message.text || ''));
+    log(String(message.text || ''), message.channel || '');
     reply({ ok: true });
     return;
   }
@@ -226,8 +232,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     (async () => {
       const data = await chrome.storage.local.get([LIST_TAB_KEY]);
       const listTabId = data[LIST_TAB_KEY];
-      // 成功才关闭发布页；失败保留页面，方便人工看校验提示
-      if (publishTabId && message.ok && publishTabId !== listTabId) {
+      // 成功才关闭发布页；失败保留页面，方便人工看校验提示。
+      // 变体模式例外：一次会开十几二十个，失败页全留着反而看不到重点，
+      // 失败原因已经随结果回传，所以变体模式下成败都关。
+      if (publishTabId && (message.ok || message.variant) && publishTabId !== listTabId) {
         await chrome.tabs.remove(publishTabId).catch(() => {});
       }
       if (!listTabId) {
